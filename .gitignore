@@ -1,0 +1,49 @@
+# Secrets
+.env
+kalshi-key.pem
+*.pem
+*.key
+
+# Data caches (regenerate from pybaseball / APIs)
+data/cache/
+data/*.db
+data/*.sqlite
+data/paper_trades/
+
+# Large model files (re-trainable)
+models/mlb/f5_multiclass*.txt
+models/mlb/calibration/
+models/mlb/*.json
+models/mlb/lgb_*.txt
+models/nfl/*.json
+models/nba/*.json
+models/wnba/*.json
+models/nhl/*.json
+models/golf/*.json
+models/soccer/*.json
+models/tennis/*.json
+models/worldcup/*.json
+models/ufc/*.json
+models/nascar/*.json
+models/nascar/*.meta.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
