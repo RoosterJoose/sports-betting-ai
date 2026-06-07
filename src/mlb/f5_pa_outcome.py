@@ -148,7 +148,7 @@ def build_pa_dataset(seasons: list[int] = None) -> pd.DataFrame:
         # Batter features (rolling averages from Statcast agg cache)
         # These are merged separately
         
-        # Keep only the columns we need
+        # Keep batted ball columns for rolling features
         keep_cols = [
             "game_pk", "game_date", "pitcher", "batter", "inning",
             "inning_topbot", "outs_when_up", "balls", "strikes",
@@ -157,6 +157,8 @@ def build_pa_dataset(seasons: list[int] = None) -> pd.DataFrame:
             "outcome", "outcome_code",
             "is_home", "runners_on", "park_factor_k", "park_factor_hr",
             "same_hand", "umpire_zone_factor",
+            # Batted ball data (for rolling features)
+            "launch_speed", "launch_angle", "hit_distance_sc", "bb_type",
         ]
         available = [c for c in keep_cols if c in df.columns]
         all_pas.append(df[available].copy())
@@ -178,110 +180,215 @@ def build_pa_dataset(seasons: list[int] = None) -> pd.DataFrame:
 
 
 def add_rolling_features(pa_df: pd.DataFrame) -> pd.DataFrame:
-    """Add per-PA features — game context, park factors, and batter/pitcher stats.
+    """Add per-PA features — game context, park factors, K/BB/HR rates, 
+    AND batted ball quality features (launch speed, launch angle, hard-hit rate).
     
-    V1 features are all from the Statcast PA-level data itself:
+    The key insight is that the model needs batted ball info to distinguish
+    between 1B, 2B, 3B, and HR. Without it, all hits look the same.
+    
+    Features:
     - Game context: inning, outs, balls, strikes, runners_on
     - Park factors (from home_team)
     - Batter/pitcher handedness matchup
-    - Batter and pitcher as categorical features (via aggregation)
-    
-    V2 will add rolling pitcher K/9, BB/9 from game logs once ID mapping
-    between Statcast (MLBAM IDs) and game logs (internal IDs) is built.
+    - Pitcher rolling K/BB/HR rates
+    - Batter rolling K/BB rates
+    - Pitcher rolling avg launch speed against, launch angle against
+    - Batter rolling avg launch speed, launch angle, hard-hit rate
+    - Batter ground ball / fly ball tendency
+    - Pitcher GB/FB tendency against
     """
     if pa_df.empty:
         return pa_df
     
-    print(f"  Adding rolling features for {len(pa_df)} PAs", flush=True)
+    print(f"  Adding features for {len(pa_df)} PAs", flush=True)
     
-    # Sort by game_date globally first for proper temporal ordering
+    # Sort by game_date for temporal ordering
     pa_df = pa_df.sort_values("game_date").reset_index(drop=True)
     
-    # Compute indicator columns
+    # ========================
+    # 1. OUTCOME INDICATORS (for rolling rate computation)
+    # ========================
     pa_df["pitcher_is_k"] = (pa_df["outcome_code"] == 7).astype(int)
     pa_df["pitcher_is_bb"] = (pa_df["outcome_code"] == 5).astype(int)
     pa_df["pitcher_is_hr"] = (pa_df["outcome_code"] == 4).astype(int)
     
-    # Build rolling features with explicit per-group computation
-    # to avoid pandas groupby/transform/index alignment edge cases
+    # ========================
+    # 2. BATTED BALL INDICATORS
+    # ========================
+    # For PAs with batted ball data, create quality indicators
+    has_bb = pa_df["launch_speed"].notna()
     
-    # Per-pitcher rolling K rate
-    pa_df["pitcher_k_rate_prior"] = 0.22  # default
-    for pid in pa_df["pitcher"].unique():
-        mask = pa_df["pitcher"] == pid
-        idx = pa_df.index[mask]
-        sorted_idx = idx.sort_values()  # already sorted by game_date
-        vals = pa_df.loc[sorted_idx, "pitcher_is_k"].values
-        for i, actual_idx in enumerate(sorted_idx):
-            if i == 0:
-                pa_df.at[actual_idx, "pitcher_k_rate_prior"] = 0.22
-            else:
-                prior = vals[:i].mean()
-                pa_df.at[actual_idx, "pitcher_k_rate_prior"] = prior
+    # Hard hit: EV >= 95 mph (Statcast definition)
+    # Fill NaN with 0 so non-BIP PAs (Ks, BBs, HBPs) don't trigger errors
+    pa_df["is_hard_hit"] = (pa_df["launch_speed"].fillna(0) >= 95).astype(int)
     
-    # Per-pitcher rolling BB rate
-    pa_df["pitcher_bb_rate_prior"] = 0.08
-    for pid in pa_df["pitcher"].unique():
-        mask = pa_df["pitcher"] == pid
-        idx = pa_df.index[mask]
-        sorted_idx = idx.sort_values()
-        vals = pa_df.loc[sorted_idx, "pitcher_is_bb"].values
-        for i, actual_idx in enumerate(sorted_idx):
-            if i == 0:
-                pa_df.at[actual_idx, "pitcher_bb_rate_prior"] = 0.08
-            else:
-                prior = vals[:i].mean()
-                pa_df.at[actual_idx, "pitcher_bb_rate_prior"] = prior
+    # Batted ball type dummies
+    for bb_t in ["ground_ball", "fly_ball", "line_drive", "popup"]:
+        pa_df[f"bb_{bb_t}"] = (pa_df["bb_type"] == bb_t).astype(int)
     
-    # Per-pitcher rolling HR rate
-    pa_df["pitcher_hr_rate_prior"] = 0.03
-    for pid in pa_df["pitcher"].unique():
-        mask = pa_df["pitcher"] == pid
-        idx = pa_df.index[mask]
-        sorted_idx = idx.sort_values()
-        vals = pa_df.loc[sorted_idx, "pitcher_is_hr"].values
-        for i, actual_idx in enumerate(sorted_idx):
-            if i == 0:
-                pa_df.at[actual_idx, "pitcher_hr_rate_prior"] = 0.03
-            else:
-                prior = vals[:i].mean()
-                pa_df.at[actual_idx, "pitcher_hr_rate_prior"] = prior
+    # Use .notna() so non-BIP PAs get 0 for all bb_type indicators
+    for col in [f"bb_{t}" for t in ["ground_ball", "fly_ball", "line_drive", "popup"]]:
+        pa_df[col] = pa_df[col].fillna(0).astype(int)
+    pa_df["is_hard_hit"] = pa_df["is_hard_hit"].fillna(0).astype(int)
     
-    # Per-batter rolling K rate (sorted by batter, then game_date)
-    pa_df["batter_k_rate_prior"] = 0.22
-    bat_sort = pa_df.sort_values(["batter", "game_date"])
-    for bid in pa_df["batter"].unique():
-        mask = bat_sort["batter"] == bid
-        idx = bat_sort.index[mask]
-        vals = pa_df.loc[idx, "pitcher_is_k"].values  # batter's K indicator
-        for j, actual_idx in enumerate(idx):
-            if j == 0:
-                pa_df.at[actual_idx, "batter_k_rate_prior"] = 0.22
-            else:
-                prior = vals[:j].mean()
-                pa_df.at[actual_idx, "batter_k_rate_prior"] = prior
+    # ========================
+    # 3. LEAGUE AVERAGE DEFAULTS
+    # ========================
+    # These will be used when there's no prior data for a pitcher/batter
+    LG_AVG_EV = 89.0       # MLB avg exit velocity
+    LG_AVG_LA = 12.0       # MLB avg launch angle (degrees)
+    LG_HARD_HIT_RATE = 0.35
+    LG_GB_RATE = 0.45
+    LG_FB_RATE = 0.25
+    LG_K_RATE = 0.22
+    LG_BB_RATE = 0.08
+    LG_HR_RATE = 0.03
     
-    # Per-batter rolling BB rate
-    pa_df["batter_bb_rate_prior"] = 0.08
-    for bid in pa_df["batter"].unique():
-        mask = bat_sort["batter"] == bid
-        idx = bat_sort.index[mask]
-        vals = pa_df.loc[idx, "pitcher_is_bb"].values
-        for j, actual_idx in enumerate(idx):
-            if j == 0:
-                pa_df.at[actual_idx, "batter_bb_rate_prior"] = 0.08
-            else:
-                prior = vals[:j].mean()
-                pa_df.at[actual_idx, "batter_bb_rate_prior"] = prior
+    # ========================
+    # 4. COMPUTE ROLLING FEATURES WITH VECTORIZED GROUPS
+    # ========================
+    # We use groupby + expanding().mean() with shift(1) for efficiency
     
+    # Sort for batter groups
+    pa_df = pa_df.sort_values(["batter", "game_date"]).reset_index(drop=True)
+    
+    # --- BATTER ROLLING FEATURES ---
+    
+    # Batter K rate (rolling)
+    pa_df["batter_k_rate_prior"] = (
+        pa_df.groupby("batter")["pitcher_is_k"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_K_RATE)
+    )
+    
+    # Batter BB rate (rolling)
+    pa_df["batter_bb_rate_prior"] = (
+        pa_df.groupby("batter")["pitcher_is_bb"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_BB_RATE)
+    )
+    
+    # Batter avg launch speed (rolling, from PREVIOUS PAs only)
+    pa_df["batter_avg_ev_prior"] = (
+        pa_df.groupby("batter")["launch_speed"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_AVG_EV)
+    )
+    
+    # Batter avg launch angle (rolling)
+    pa_df["batter_avg_la_prior"] = (
+        pa_df.groupby("batter")["launch_angle"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_AVG_LA)
+    )
+    
+    # Batter hard-hit rate (rolling, EV >= 95)
+    pa_df["batter_hard_hit_rate_prior"] = (
+        pa_df.groupby("batter")["is_hard_hit"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_HARD_HIT_RATE)
+    )
+    
+    # Batter GB rate (rolling)
+    pa_df["batter_gb_rate_prior"] = (
+        pa_df.groupby("batter")["bb_ground_ball"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_GB_RATE)
+    )
+    
+    # Batter FB rate (rolling)
+    pa_df["batter_fb_rate_prior"] = (
+        pa_df.groupby("batter")["bb_fly_ball"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_FB_RATE)
+    )
+    
+    # Batter line drive rate (rolling) — higher LD = harder contact
+    pa_df["batter_ld_rate_prior"] = (
+        pa_df.groupby("batter")["bb_line_drive"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(0.20)
+    )
+    
+    # --- PITCHER ROLLING FEATURES ---
+    # Re-sort for pitcher groups
+    pa_df = pa_df.sort_values(["pitcher", "game_date"]).reset_index(drop=True)
+    
+    # Pitcher K rate (rolling)
+    pa_df["pitcher_k_rate_prior"] = (
+        pa_df.groupby("pitcher")["pitcher_is_k"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_K_RATE)
+    )
+    
+    # Pitcher BB rate (rolling)
+    pa_df["pitcher_bb_rate_prior"] = (
+        pa_df.groupby("pitcher")["pitcher_is_bb"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_BB_RATE)
+    )
+    
+    # Pitcher HR rate (rolling)
+    pa_df["pitcher_hr_rate_prior"] = (
+        pa_df.groupby("pitcher")["pitcher_is_hr"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_HR_RATE)
+    )
+    
+    # Pitcher avg launch speed against (rolling) — lower = better
+    pa_df["pitcher_avg_ev_against"] = (
+        pa_df.groupby("pitcher")["launch_speed"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_AVG_EV)
+    )
+    
+    # Pitcher avg launch angle against (rolling)
+    pa_df["pitcher_avg_la_against"] = (
+        pa_df.groupby("pitcher")["launch_angle"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_AVG_LA)
+    )
+    
+    # Pitcher hard-hit rate against (rolling)
+    pa_df["pitcher_hard_hit_against"] = (
+        pa_df.groupby("pitcher")["is_hard_hit"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_HARD_HIT_RATE)
+    )
+    
+    # Pitcher GB rate against (rolling)
+    pa_df["pitcher_gb_rate_against"] = (
+        pa_df.groupby("pitcher")["bb_ground_ball"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_GB_RATE)
+    )
+    
+    # Pitcher FB rate against (rolling)
+    pa_df["pitcher_fb_rate_against"] = (
+        pa_df.groupby("pitcher")["bb_fly_ball"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(LG_FB_RATE)
+    )
+    
+    # ========================
+    # 5. CLEANUP
+    # ========================
     # Drop intermediate indicator columns
-    for col in ["pitcher_is_k", "pitcher_is_bb", "pitcher_is_hr"]:
+    for col in ["pitcher_is_k", "pitcher_is_bb", "pitcher_is_hr", "is_hard_hit",
+                "bb_ground_ball", "bb_fly_ball", "bb_line_drive", "bb_popup"]:
         if col in pa_df.columns:
             pa_df.drop(columns=[col], inplace=True)
     
-    # Handle missing values
+    # Drop raw batted ball columns (not features themselves)
+    for col in ["launch_speed", "launch_angle", "hit_distance_sc", "bb_type"]:
+        if col in pa_df.columns:
+            pa_df.drop(columns=[col], inplace=True)
+    
+    # Handle any remaining missing values
     numeric_cols = pa_df.select_dtypes(include=[np.number]).columns
     pa_df[numeric_cols] = pa_df[numeric_cols].fillna(0)
+    
+    print(f"    Created {sum(1 for c in pa_df.columns if 'prior' in c or 'against' in c or 'rate' in c)} rolling features")
     
     return pa_df
 
