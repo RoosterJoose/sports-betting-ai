@@ -2,13 +2,21 @@
 
 Repo: https://github.com/RoosterJoose/sports-betting-ai
 
-To restore in a new session:
+## First command in a new Codebuff session:
+> Read SESSION.md for the full context on where we left off
+
+Then say "Continue building from SESSION.md" to resume work.
+
+## To restore in a new terminal:
 ```bash
 git clone https://github.com/RoosterJoose/sports-betting-ai.git
 cd sports-betting-ai
-# Re-register the .codebuff skill (available at session start):
-# skill("deep-research")  # or use individual: research, research-deep, etc.
 ```
+
+## After cloning — restore these files from the original machine:
+- `sports-betting-ai/.env` — Kalshi API key, DB path
+- `sports-betting-ai/kalshi-key.pem` — RSA private key for Kalshi auth
+(These are gitignored for security — they don't come with the clone)
 
 Last updated: 2026-06-07
 
