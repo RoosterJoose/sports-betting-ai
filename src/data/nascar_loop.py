@@ -40,10 +40,30 @@ RR_TRACK_MAP = {
 
 
 def _normalize_driver(name: str) -> str:
-    """Normalize driver name to lowercase, stripped of parenthetical annotations."""
-    n = re.sub(r"\s*\([^)]*\)\s*", "", name)
-    n = re.sub(r"\s*\*+\s*$", "", n)  # trailing asterisks (rookie markers)
+    """Normalize driver name for cross-source matching.
+    
+    Handles:
+    - Parenthetical annotations: "Chase Elliott (i)" -> "chase elliott"
+    - Trailing asterisks (rookie markers): "William Byron*" -> "william byron"
+    - Car number prefixes: "#24 William Byron" -> "william byron"
+    - Periods in initials: "A. J. Allmendinger" -> "aj allmendinger"
+    - Diacritics: "Daniel Suárez" -> "daniel suarez"
+    - Suffixes with periods: "Martin Truex Jr." -> "martin truex jr"
+    - Extra whitespace
+    """
+    n = re.sub(r"\s*\([^)]*\)\s*", " ", name)
+    n = re.sub(r"\s*\*+\s*$", "", n)  # trailing asterisks
     n = re.sub(r"\s*\#.*$", "", n)    # trailing car number like #24
+    n = re.sub(r"\.", " ", n)          # periods -> spaces (for initials)
+    n = re.sub(r"[áàâãäå]", "a", n, flags=re.I)
+    n = re.sub(r"[éèêë]", "e", n, flags=re.I)
+    n = re.sub(r"[íìîï]", "i", n, flags=re.I)
+    n = re.sub(r"[óòôõö]", "o", n, flags=re.I)
+    n = re.sub(r"[úùûü]", "u", n, flags=re.I)
+    n = re.sub(r"[ñ]", "n", n, flags=re.I)
+    n = re.sub(r"[ç]", "c", n, flags=re.I)
+    n = re.sub(r"[^a-z0-9\s]", "", n, flags=re.I)  # remove remaining non-alpha
+    n = re.sub(r"\s+", " ", n)  # collapse whitespace
     return n.strip().lower()
 
 

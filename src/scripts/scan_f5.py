@@ -269,19 +269,22 @@ class F5Scanner:
             real_prices = [mkt_prices[oc] for oc in ['AWAY', 'HOME', 'TIE'] if oc in mkt_prices and not mkt_prices[oc]["synthetic"]]
             use_shin = len(real_prices) >= 2
 
+            # Build input probabilities for all 3 outcomes
+            raw_mkt = np.array([mkt_prices.get(oc, {"mid": 0.001})["mid"] for oc in ['AWAY', 'HOME', 'TIE']])
+            raw_mkt = np.maximum(raw_mkt, 0.001)
+            raw_mkt = raw_mkt / raw_mkt.sum()
+            
             if use_shin:
-                raw_mkt = np.array([mkt_prices.get(oc, {"mid": 0.001})["mid"] for oc in ['AWAY', 'HOME', 'TIE']])
-                raw_mkt = np.maximum(raw_mkt, 0.001)
-                raw_mkt = raw_mkt / raw_mkt.sum()
                 devigged = self.shin_devig(raw_mkt)
             else:
-                devigged = np.array([mkt_prices.get(oc, {"mid": 0.33})["mid"] for oc in ['AWAY', 'HOME', 'TIE']])
+                # Without enough real prices, use normalized raw mids as fair values
+                devigged = raw_mkt.copy()
 
             for oc in ['AWAY', 'HOME', 'TIE']:
                 if oc not in mkt_prices: continue
                 mp = mkt_prices[oc]
                 market_mid = mp["mid"]
-                fair_prob = float(devigged[{'AWAY':0, 'HOME':1, 'TIE':2}[oc]]) if use_shin else market_mid
+                fair_prob = float(devigged[{'AWAY':0, 'HOME':1, 'TIE':2}[oc]])
                 model_prob = float(cal_preds[{'AWAY':0, 'HOME':1, 'TIE':2}[oc]])
                 edge = model_prob - fair_prob
 

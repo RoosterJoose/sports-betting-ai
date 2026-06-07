@@ -11,33 +11,23 @@ from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 
-from src.data.nascar import NASCARDataSource    from src.data.nascar_loop import fetch_multiyear_loop_data, _normalize_driver
+from src.data.nascar import NASCARDataSource
+from src.data.nascar_loop import fetch_multiyear_loop_data, _normalize_driver
 from src.features.nascar import NASCARFeatureEngineer
 
 MODEL_DIR = Path("models/nascar")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 FEATURES = [
-    "avg_finish_position_5", "avg_standings_position_5",
-    "avg_finish_position_10", "avg_standings_position_10",
-    "avg_finish_position_20", "avg_standings_position_20",
-    "rate_is_winner_10", "rate_pole_position_10", "rate_laps_led_most_10",
-    "tt_superspeedway_avg", "tt_short_avg", "tt_intermediate_avg",
-    "tt_road_avg", "tt_triangle_avg", "tt_speedway_avg",
+    # Rolling form features (proven most predictive)
+    "avg_finish_position_5", "avg_finish_position_10", "avg_finish_position_20",
+    "avg_standings_position_5", "avg_standings_position_10",
     "form_recent", "finish_std_10",
-    "team_avg_finish", "manufacturer_avg_finish",
-    "race_number", "season_experience",
-    "avg_start_pos_5", "avg_start_pos_10", "avg_start_pos_20",
-    "avg_starting_position_5", "avg_starting_position_10", "avg_starting_position_20",
-    # Loop data features
-    "roll_driver_rating_3", "roll_driver_rating_5", "roll_driver_rating_10",
-    "roll_avg_running_pos_3", "roll_avg_running_pos_5", "roll_avg_running_pos_10",
-    "roll_laps_led_rate_3", "roll_laps_led_rate_5", "roll_laps_led_rate_10",
-    "roll_top15_laps_3", "roll_top15_laps_5", "roll_top15_laps_10",
-    "roll_quality_passes_3", "roll_quality_passes_5", "roll_quality_passes_10",
-    "roll_pass_diff_3", "roll_pass_diff_5", "roll_pass_diff_10",
-    "roll_pct_quality_passes_3", "roll_pct_quality_passes_5", "roll_pct_quality_passes_10",
-    "roll_pct_top15_laps_3", "roll_pct_top15_laps_5", "roll_pct_top15_laps_10",
+    "season_experience",
+    "avg_start_pos_5", "avg_start_pos_10",
+    # Loop data features (key ones only — driver rating r≈0.614)
+    "roll_driver_rating_5", "roll_avg_running_pos_5",
+    "roll_laps_led_rate_5", "roll_quality_passes_5",
 ]
 
 
