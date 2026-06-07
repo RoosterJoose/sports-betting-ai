@@ -1,5 +1,15 @@
 # Session State — Sports Betting AI
 
+Repo: https://github.com/RoosterJoose/sports-betting-ai
+
+To restore in a new session:
+```bash
+git clone https://github.com/RoosterJoose/sports-betting-ai.git
+cd sports-betting-ai
+# Re-register the .codebuff skill (available at session start):
+# skill("deep-research")  # or use individual: research, research-deep, etc.
+```
+
 Last updated: 2026-06-07
 
 ## Active Build Tracks
@@ -23,39 +33,64 @@ Last updated: 2026-06-07
   - Schedule table HTML parsing doesn't match Racing-Reference structure
 - **Next step**: Fix URL/parsing → fetch loop data → update feature engineer → re-train
 
-### Track 3: World Cup Launch (Ready, Blocked)
+### Track 3: World Cup Launch (Ready)
 - **Status**: ✅ Scanner works. Models trained. Morning scan integrated.
-- **Blocked on**: Needs Kalshi funds ($0.09→$50.09 ✅ Deposited!)
+- **Kalshi**: $50.09 deposited ✅ can trade
 - **Launch**: Auto-activates June 11
 
 ### Track 4: NASCAR Re-Train (Not Started)
 - **Depends on**: Track 2 completing (need loop data features)
 
 ## Kalshi Status
-- Balance: $50.09
-- API key in .env (not pushed to git)
+- Balance: $50.09 (check with `python3 -c 'from src.data.kalshi import KalshiClient; c=KalshiClient(); print(f"${c.get_balance():.2f}")'`)
+- API key in .env (not pushed to git — on local machine at sports-betting-ai/.env)
 
-## Research from NotebookLM
-Answers received for all 7 questions covering:
-- F5 Monte Carlo PA simulation framework
-- NASCAR driver rating as primary feature (r≈0.614)
-- Feature validation methodology (walk-forward, shift(1) audit)
-- Model decay monitoring (Brier, ECE, CLV tracking)
+## Key Research Findings from NotebookLM
 
-## How to Continue
+### F5 Monte Carlo (replaces current 39.6% accuracy multiclass model)
+- **Architecture**: PA-level Monte Carlo simulator, not game-level classifier
+- **8 outcomes**: OUT, 1B, 2B, 3B, HR, BB, HBP, K — predict via LightGBM
+- **Top pitcher features**: xFIP, SIERA, K%, BB% (normalize HR luck, isolate skill)
+- **Catcher framing**: +2 framing runs → 1-2% K probability shift per PA
+- **Umpire zone**: 0.5-1.0 run swing per game
+- **Park factors**: K/9 park factor (SD=1.08, COL=0.88), HR factor (COL=1.32, SF=0.92)
+- **For F5**: Drop bullpen ERA (zero signal), use only starter + catcher + ump
+
+### NASCAR (current models worse than naive baseline)
+- **Driver Rating** (year-to-date loop data): correlation r≈0.614 with finish
+- **Avg Running Position**: best live/in-race metric (isolates car speed from pit strategy variance)
+- **Data sources**: Racing-Reference (historical loop data) + cf.nascar.com Swagger API (live qualifying)
+- **Track types**: superspeedway, intermediate, short, road, triangle(Pocono), speedway
+
+### Feature Validation & Decay
+- **Must use walk-forward validation** (not random k-fold — creates look-ahead bias)
+- **`.shift(1)` audit**: all rolling features must use shift(1) to prevent leakage
+- **Label shuffling test**: accuracy should drop 7-10% when outcomes shuffled within game dates
+- **Decay thresholds**: recalibrate when CLV goes negative, ECE > 0.015, or Brier stagnates
+- **Minimum significance**: 1,000 out-of-sample games for statistical significance
+
+## How to Continue from Here
+### Fix critical bugs first:
+1. Fix park factor codes in `f5_pa_outcome.py` (use Statcast 3-letter codes)
+2. Fix batter rolling stats sort order in `f5_pa_outcome.py`
+3. Fix walk resolution in `f5_simulator.py` (base-loaded check before setting on_1b)
+4. Fix NASCAR scraper HTML parsing in `nascar_loop.py`
+
+### Then run:
 ```bash
-# When starting a new session, run:
-cd sports-betting-ai
-
-# To train F5 PA model:
-python3 -m src.mlb.f5_pa_outcome
-
-# To test NASCAR loop data scraper:
-python3 -m src.data.nascar_loop
-
-# To run F5 scanner:
-python3 -m src.scripts.scan_f5
-
-# To re-train NASCAR:
-python3 -m src.scripts.train_nascar
+python3 -m src.mlb.f5_pa_outcome           # Train PA outcome model (~10 min)
+python3 -m src.data.nascar_loop             # Fetch NASCAR loop data
+python3 -m src.mlb.f5_simulator             # Test simulator
 ```
+
+### After fixes verified:
+```bash
+python3 -m src.scripts.scan_f5               # F5 scanner with MC pipeline
+python3 -m src.scripts.train_nascar          # Re-train NASCAR with loop data
+python3 -m src.scripts.nascar_weekly         # Weekly NASCAR scan (Pocono June 14)
+```
+
+## Tools Available
+- **Deep research skill**: `.codebuff/skills/deep-research/` (loaded at session start)
+- **Web search agent**: `.codebuff/agents/web-search-agent.md`
+- **NotebookLM**: 7 questions answered (stored above) — ask Codebuff for details
