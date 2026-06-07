@@ -77,12 +77,20 @@ def build_training_data(pitchers, f5_outcomes):
         return None, None, None
     if "game_pk" not in pitchers.columns:
         return None, None, None
-    game_teams = pitchers[["game_pk", "team_abbr", "game_date"]].drop_duplicates(subset=["game_pk", "team_abbr"])
+    # Use home_or_away column to correctly identify which team is home/away
+    teams_hoa = pitchers[["game_pk", "team_abbr", "game_date", "home_or_away"]].drop_duplicates(subset=["game_pk", "team_abbr"]).copy()
+    # Standardize home_or_away values ('H'/'A' and 'home'/'away' both exist in the raw data)
+    teams_hoa["is_home"] = teams_hoa["home_or_away"].str.upper().str[0] == "H"
     game_lookup = {}
-    for gpk, grp in game_teams.groupby("game_pk"):
-        teams = grp["team_abbr"].unique().tolist()
-        if len(teams) >= 2:
-            game_lookup[gpk] = {"away": teams[0], "home": teams[1], "date": grp["game_date"].iloc[0]}
+    for gpk, grp in teams_hoa.groupby("game_pk"):
+        home_teams = grp[grp["is_home"]]["team_abbr"].unique()
+        away_teams = grp[~grp["is_home"]]["team_abbr"].unique()
+        if len(home_teams) >= 1 and len(away_teams) >= 1:
+            game_lookup[gpk] = {
+                "away": away_teams[0],
+                "home": home_teams[0],
+                "date": grp["game_date"].iloc[0]
+            }
     print(f"  Game lookup: {len(game_lookup)} games")
     X_rows, y_labels = [], []
     matched, no_game, no_pitcher = 0, 0, 0
@@ -205,7 +213,7 @@ def train_model(X, y, feature_cols):
                     "p_pred_min": float(lo), "p_pred_max": float(hi),
                     "p_actual": float(class_actual[mask].mean()), "n": int(mask.sum()),
                 })
-        with open(CALIB_DIR / f"f5_v2_{cls_name}_empirical.json", "w") as f:
+        with open(CALIB_DIR / f"f5_{cls_name}_empirical.json", "w") as f:
             json.dump(cal_table, f, indent=2)
         print(f"  Calibration saved for {cls_name}")
 

@@ -126,7 +126,7 @@ class MLBFeatureEngineer(FeatureEngineer):
         df = df.sort_values(["game_date", "player_id"]).reset_index(drop=True)
 
         keep_cols = ["player_id", "game_date", "game_pk", "position", "team_id", "player_name", "team_abbr", "gs",
-                     "park_factor_k", "park_factor_hr", "park_factor_tb"]
+                     "home_or_away", "park_factor_k", "park_factor_hr", "park_factor_tb"]
         for c in df.columns:
             if any(c.endswith(f"_avg_{w}") for w in self.windows):
                 keep_cols.append(c)

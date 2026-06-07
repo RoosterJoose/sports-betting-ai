@@ -43,14 +43,19 @@ class F5Scanner:
         self.kc = KalshiClient()
         self.balance = balance
         import lightgbm as lgb
-        f5_path = MODEL_DIR / "f5_multiclass.txt"
+        # Prefer v2 model (trained with correct home/away labels), fallback to v1
+        f5_path = MODEL_DIR / "f5_multiclass_v2.txt"
+        meta_path = MODEL_DIR / "f5_multiclass_v2.meta.json"
         if not f5_path.exists():
-            print("  F5 model not found — skipping (no training script available)")
+            f5_path = MODEL_DIR / "f5_multiclass.txt"
+            meta_path = MODEL_DIR / "f5_multiclass.meta.json"
+        if not f5_path.exists():
+            print("  F5 model not found — skipping")
             self.model = None
             self.meta = {"features": []}
             return
         self.model = lgb.Booster(model_file=str(f5_path))
-        with open(MODEL_DIR / "f5_multiclass.meta.json") as f:
+        with open(meta_path) as f:
             self.meta = json.load(f)
         self.feature_cols = self.meta["features"]
         self.cached_feat = None
