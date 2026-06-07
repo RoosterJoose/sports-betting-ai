@@ -64,22 +64,27 @@ def resolve_outcome(outcome_code, state):
         outs += 1
     
     elif outcome_code == 5:  # BB
-        # Walk: runners advance if forced
-        if not on_1b and not on_2b and not on_3b:
-            on_1b = True
-        elif on_1b and not on_2b and not on_3b:
-            on_2b = True
-            on_1b = True
-        elif on_1b and on_2b and not on_3b:
-            on_3b = True
-            on_2b = True
-            on_1b = True
-        elif on_1b and on_2b and on_3b:
-            # Bases loaded: runner scores
+        # Walk: check pre-walk state, then advance runners
+        # Save pre-walk state to avoid bugs from in-place modification
+        pre_on_1b, pre_on_2b, pre_on_3b = on_1b, on_2b, on_3b
+        if not pre_on_1b and not pre_on_2b and not pre_on_3b:
+            on_1b = True; on_2b = False; on_3b = False
+        elif pre_on_1b and not pre_on_2b and not pre_on_3b:
+            on_1b = True; on_2b = True; on_3b = False
+        elif not pre_on_1b and pre_on_2b and not pre_on_3b:
+            on_1b = True; on_2b = True; on_3b = False
+        elif not pre_on_1b and not pre_on_2b and pre_on_3b:
+            on_1b = True; on_2b = False; on_3b = True  # 3B stays, walk loads 1B
+        elif pre_on_1b and pre_on_2b and not pre_on_3b:
+            on_1b = True; on_2b = True; on_3b = True
+        elif pre_on_1b and not pre_on_2b and pre_on_3b:
+            on_1b = True; on_2b = True; on_3b = False  # 1B→2B, 3B stays
+        elif not pre_on_1b and pre_on_2b and pre_on_3b:
+            on_1b = True; on_2b = True; on_3b = True
+        elif pre_on_1b and pre_on_2b and pre_on_3b:
+            # Bases loaded: walk forces runner home
             _score(state)
-            on_3b = True
-            on_2b = True
-            on_1b = True
+            on_1b = True; on_2b = True; on_3b = True
     
     elif outcome_code == 6:  # HBP
         on_1b = True

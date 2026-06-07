@@ -1,0 +1,434 @@
+import sys, json, warnings, time
+warnings.filterwarnings("ignore")
+sys.path.insert(0, ".")
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+
+from src.data.kalshi import KalshiClient
+from src.execution.risk import RiskManager
+from src.utils.trade_tracker import TradeTracker
+from src.execution.kalshi_parlay import KalshiParlayFinder, parse_opportunities, display_parlays
+from src.execution.risk import Bet, RiskManager
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def verify_and_cancel(ticker, model_prob, order_price, side, order_id=None, min_edge=0.05):
+    """Re-check market after placing. Cancel if edge disappeared."""
+    kc = KalshiClient()
+    time.sleep(1.5)
+    mkts = kc.list_markets(ticker_prefix=ticker, limit=10)
+    if mkts is None or mkts.empty:
+        return True
+
+    row = mkts.iloc[0]
+    yb = float(row.get("yes_bid", 0) or 0)
+    ya = float(row.get("yes_ask", 0) or 0)
+    fair_prob = yb + (ya - yb) / 2 if ya > 0 else yb
+    current_edge = model_prob - fair_prob
+
+    if current_edge < min_edge:
+        print(f"  ✗ Edge dropped to {current_edge:.1%} (needs {min_edge:.1%}) — cancelling")
+        if order_id:
+            kc.cancel_order(order_id)
+            print(f"  ✓ Cancelled")
+            return False
+        orders = kc._request("GET", "/portfolio/orders").get("orders", [])
+        for o in orders:
+            if o.get("ticker") == ticker and o.get("status") == "resting":
+                kc.cancel_order(o.get("order_id", ""))
+                print(f"  ✓ Cancelled")
+                return False
+        return False
+    print(f"  ✓ Verified: edge={current_edge:.1%}")
+    return True
+
+
+def place_with_verify(kc, ticker, side, price_cents, contracts, model_prob):
+    """Place order, then verify and cancel if edge gone."""
+    print(f"\n  → {ticker} {side.upper()} {price_cents}¢ × {contracts} "
+          f"(model={model_prob:.0%}, edge pending verify)")
+    try:
+        resp = kc.create_order(ticker=ticker, side=side,
+                               yes_price=price_cents, count=str(contracts))
+    except Exception as e:
+        print(f"  ✗ Order failed: {e}")
+        return False
+
+    if not resp or not resp.get("order_id"):
+        print(f"  ✗ Order rejected: {resp}")
+        return False
+
+    oid = resp["order_id"]
+    fill_count = float(resp.get("fill_count", "0"))
+    remaining_count = float(resp.get("remaining_count", "0"))
+
+    if fill_count > 0 and remaining_count == 0:
+        print(f"  ✓ Filled (${float(resp.get('average_fill_price', '0')):.2f} × {fill_count:.0f})")
+        return True
+    elif fill_count == 0 and remaining_count > 0:
+        print(f"  ✓ Resting (order_id={oid[:8]}...)")
+        return verify_and_cancel(ticker, model_prob, price_cents, side, order_id=oid)
+    else:
+        print(f"  ✓ Partial fill ({fill_count:.0f} filled, {remaining_count:.0f} remaining)")
+        return True
+
+
+def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
+    """Coordinated morning scan across all Kalshi sports."""
+    print("=" * 70)
+    print(f"  MORNING SCAN — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 70)
+
+    kc = KalshiClient()
+    balance = bankroll or kc.get_balance()
+    risk = RiskManager(bankroll=balance)
+    print(f"  Balance: ${balance:.2f}  |  Min edge: {min_edge:.0%}")
+
+    all_bets = []
+
+    # === MLB F5 ===
+    print(f"\n{'─'*70}")
+    print("  1. MLB F5 MARKETS")
+    print(f"{'─'*70}")
+    try:
+        from src.scripts.scan_f5 import F5Scanner
+        sc = F5Scanner(balance=balance)
+        if sc.model is None:
+            print("  Model not available — skipping F5")
+        else:
+            date = datetime.now().strftime("%Y-%m-%d")
+            f5_bets = sc.scan(date)
+            print(f"  → {len(f5_bets)} qualifying F5 bets")
+            for b in f5_bets:
+                all_bets.append({
+                    "type": "f5",
+                    "ticker": b["ticker"],
+                    "side": "yes",
+                    "price_cents": int(b["market_mid"] * 100),
+                    "model_prob": b["model_prob"] / 100.0,
+                    "market_prob": b.get("fair_prob", b["market_prob"]) / 100.0,
+                    "edge": b["edge"] / 100.0,
+                    "contracts": 1,
+                    "label": f"F5-{b.get('game','?')} {b.get('outcome','?')}",
+                })
+    except Exception as e:
+        print(f"  ✗ F5 error: {e}")
+
+    # === MLB Strikeout Props (KS) ===
+    print(f"\n{'─'*70}")
+    print("  2. MLB STRIKEOUT PROPS")
+    print(f"{'─'*70}")
+    try:
+        from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line, _recency_check
+        import re
+        latest = load_features()
+        if latest is not None and not latest.empty:
+            print(f"  Loaded {len(latest)} players")
+            ks_mkts = kc.list_markets(series_ticker="KXMLBKS", limit=200)
+            if ks_mkts is not None and not ks_mkts.empty:
+                today = datetime.now().strftime("%y%b%d").upper()
+                ks_mkts = ks_mkts[ks_mkts['ticker'].str.contains(today, regex=False, na=False)]
+                print(f"  {len(ks_mkts)} markets for today")
+                for mt in MARKET_TYPES:
+                    if mt["series_ticker"] != "KXMLBKS" or mt.get("info_only", False):
+                        continue
+                    m, s = _load_regressor(mt["model_name"])
+                    if m is None:
+                        continue
+                    for _, row in ks_mkts.iterrows():
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0: continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+                        lm = re.match(mt["pattern"], title, re.IGNORECASE)
+                        if not lm: continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        prow = _match_player(pname, latest, position_filter=mt["position"])
+                        if prow is None: continue
+                        p_yes, mu = _p_ge_line(prow, m, s, line_val)
+                        yes_edge = p_yes - yes_mid
+                        if yes_edge >= 0.05 and yes_mid >= 0.10 and yes_mid <= 0.80:
+                            recency_rate, _, _ = _recency_check(pname, line_val)
+                            if recency_rate >= 0:
+                                p_final = max(p_yes, recency_rate)
+                            else:
+                                p_final = p_yes
+                            all_bets.append({
+                                "type":"ks","ticker":ticker,"side":"yes",
+                                "price_cents":max(1,int(yes_mid*100)),
+                                "model_prob":p_yes,"market_prob":yes_mid,
+                                "edge":p_final - yes_mid,"contracts":1,
+                                "label":f"KS-{pname} {line_val}+ Ks",
+                            })
+                ks_list = [b for b in all_bets if b['type']=='ks']
+                for b in ks_list:
+                    print(f"  {b['ticker'][:40]:40s} edge={b['edge']:.0%} mkt={b['market_prob']:.0%} mod={b['model_prob']:.0%} @ {b['price_cents']}¢")
+                print(f"  → {len(ks_list)} qualifying KS bets")
+    except Exception as e:
+        print(f"  ✗ KS error: {e}")
+
+    # === World Cup 2026 (starts June 11) ===
+    print(f"\n{'─'*70}")
+    print("  4. WORLD CUP 2026 — STARTING JUNE 11")
+    print(f"{'─'*70}")
+    today_dt = datetime.now()
+    wc_start = datetime(2026, 6, 11)
+    days_until_wc = (wc_start - today_dt).days
+    if days_until_wc <= 0:
+        try:
+            from src.scripts.scan_wc import scan
+            wc_bets = scan(args=None)
+            if wc_bets:
+                for q in wc_bets:
+                    all_bets.append({
+                        "type": "worldcup", "ticker": q["ticker"],
+                        "side": "yes", "sport": "worldcup",
+                        "price_cents": max(1, int(q["ya"] * 100)),
+                        "market_prob": q["mkt_p"], "model_prob": q["model_p"],
+                        "edge": q["edge_pct"] / 100.0,
+                        "contracts": q.get("contracts", 1),
+                        "label": f"WC-{q.get('match','?')} {q.get('pick','?')}",
+                    })
+        except Exception as e:
+            print(f"  ✗ World Cup scan error: {e}")
+    else:
+        print(f"  World Cup starts in {days_until_wc} days ({wc_start.date()})")
+        print(f"  Scanner ready — will activate automatically")
+
+    # === Safe Compounder ===
+    print(f"\n{'─'*70}")
+    print("  5. SAFE COMPOUNDER")
+    print(f"{'─'*70}")
+    try:
+        from src.execution.kalshi_trader import KalshiTrader
+        kt = KalshiTrader(risk=risk)
+        opps = kt.safe_compounder_scan()
+        if opps:
+            for o in sorted(opps, key=lambda x: x["edge_cents"], reverse=True)[:10]:
+                ec = o["edge_cents"]
+                print(f"  {o['ticker']:55s} NO @ {o['order_price_cents']}¢  edge={ec:.0f}¢  '
+                      f"size={o.get('size',0)}  yes=${o.get('yes_price',0):.2f}")
+                if o.get('size', 0) > 0:
+                    all_bets.append({
+                        "type": "compounder",
+                        "ticker": o["ticker"],
+                        "side": "no",
+                        "price_cents": o["order_price_cents"],
+                        "contracts": o.get("size", 1),
+                        "model_prob": 1 - o.get("yes_price", 0.5),
+                        "market_prob": 1 - o["order_price_cents"] / 100.0,
+                        "edge": o["edge_cents"] / 100.0,
+                        "label": f"compounder-{o['ticker'][:30]}",
+                    })
+        else:
+            print("  No opportunities")
+    except Exception as e:
+        print(f"  ✗ Compounder error: {e}")
+
+    # === Multi-Leg Parlay Analysis ===
+    print(f"\n{'─'*70}")
+    print("  6. MULTI-LEG PARLAYS (2/3/4-leg)")
+    print(f"{'─'*70}")
+    try:
+        # Collect all qualifying opportunities for parlay analysis
+        parlay_opps = []
+        for b in all_bets:
+            price_cents = b.get("price_cents", 50)
+            if price_cents < 1 or price_cents > 99:
+                continue
+            if b.get("edge", 0) < min_edge:
+                continue
+            if b["type"] == "compounder":
+                continue  # compounder is NO-side, not suitable for parlays
+            if b["type"] == "f5":
+                continue  # F5 model quality is too poor for parlays
+            parlay_opps.append({
+                "ticker": b["ticker"],
+                "title": b.get("label", b.get("ticker", "")),
+                "market_prob": b.get("market_prob", price_cents / 100.0),
+                "model_prob": b.get("model_prob", 0.5),
+                "edge": b.get("edge", 0),
+                "price_cents": price_cents,
+                "label": b.get("label", ""),
+            })
+
+        if len(parlay_opps) >= 2:
+            finder = KalshiParlayFinder(min_edge=min_edge)
+            parlay_results = finder.find_best(parlay_opps, top_n=5)
+            display_parlays(parlay_results, "Kalshi Multi-Leg Plays (best 2/3/4-leg combos)")
+            print(f"  Source: {len(parlay_opps)} qualifying opportunities")
+        else:
+            print(f"  Need at least 2 qualifying edges (have {len(parlay_opps)})")
+    except Exception as e:
+        print(f"  ✗ Parlay analysis error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # === Unified Top Plays Leaderboard ===
+    print(f"\n{'='*70}")
+    print("  ★ TOP PLAYS FOR TODAY — Ranked by Edge")
+    print(f"{'='*70}")
+    
+    # Filter to bet-worthy plays only
+    top_plays = [b for b in all_bets if b.get("edge", 0) >= min_edge]
+    top_plays.sort(key=lambda x: -x.get("edge", 0))
+    
+    if top_plays:
+        print(f"  {'Rank':4s} {'Type':12s} {'Label':45s} {'Edge':8s} {'Price':6s} {'Model':6s} {'Mkt':6s}")
+        print(f"  {'─'*4} {'─'*12} {'─'*45} {'─'*8} {'─'*6} {'─'*6} {'─'*6}")
+        for i, p in enumerate(top_plays[:15]):
+            edge_str = f"{p.get('edge',0):+.0%}"
+            price = p.get("price_cents", 0)
+            label = p.get("label", p.get("ticker", "?"))[:44]
+            mprob = p.get("model_prob", 0)
+            mkprob = p.get("market_prob", 0)
+            print(f"  #{i+1:<2d} {p['type']:12s} {label:45s} {edge_str:>8s} {price:3d}¢ {mprob:.0%} {mkprob:.0%}")
+        print(f"\n  Total bet-worthy plays: {len(top_plays)}  |  Balance: ${balance:.2f}")
+        
+        # Calculate what we could actually bet
+        max_bet = balance * 0.03  # 3% per bet
+        print(f"  Max bet per play (3%): ${max_bet:.2f}")
+        
+        # Best single plays (not from same game to avoid correlation)
+        seen_games = set()
+        top_unique = []
+        for p in top_plays:
+            ticker = p.get("ticker", "")
+            game_key = ticker.split("-")[1] if "-" in ticker and len(ticker.split("-")) > 1 else ""
+            if game_key not in seen_games or not game_key:
+                top_unique.append(p)
+                seen_games.add(game_key)
+                if len(top_unique) >= 5:
+                    break
+        if top_unique:
+            print(f"\n★ RECOMMENDED (max 1 per game):")
+            for i, p in enumerate(top_unique):
+                cost = p.get("price_cents", 50) / 100.0 * p.get("contracts", 1)
+                kelly_pct = min(p.get("edge", 0) / max(0.01, 1 - p.get("market_prob", 0.5)), 0.03) * 0.25
+                bet_size = min(kelly_pct * balance, max_bet)
+                contracts = max(1, int(bet_size / max(0.01, p.get("price_cents", 50) / 100.0)))
+                edge_str = f"{p.get('edge',0):+.0%}"
+                print(f"  #{i+1}: buy {p['type']:>5s} YES {contracts}ctr @ {p.get('price_cents',0)}¢ | edge={edge_str} | cost=${contracts * p.get('price_cents',50) / 100:.2f}")
+    else:
+        print("  No qualifying plays found today")
+
+    # === Log all bets to trade tracker ===
+    tracker = TradeTracker()
+    for b in all_bets:
+        b["sport"] = "mlb" if b["type"] in ("f5", "ks") else \
+                     "politics" if b["type"] == "compounder" else \
+                     b.get("sport", "unknown")
+        b["live"] = bool(auto_bet)
+        b["model_name"] = b["type"]
+    tracker.log_batch(all_bets)
+    n_live = sum(1 for b in all_bets if b.get("live"))
+    n_paper = sum(1 for b in all_bets if not b.get("live"))
+    print(f"\n  Logged {len(all_bets)} trades to tracker ({n_live} live, {n_paper} paper)")
+
+    # === Place orders ===
+    if auto_bet and all_bets:
+        max_bets = 8
+        max_exposure_pct = 0.25
+        placed = 0
+        total_exposure = 0.0
+
+        print(f"\n{'='*70}")
+        print(f"  7. PLACING ORDERS (max {max_bets}, max {max_exposure_pct:.0%} of bankroll)")
+        print(f"{'='*70}")
+
+        # NotebookLM feedback:
+        # 1. Simultaneous bets need multi-variate Kelly — group by game time, scale by 1/sqrt(N)
+        # 2. Edges > 30% are red flags — scale down aggressively
+
+        import re
+        def _time_slot(ticker):
+            m = re.search(r'\d{2}[A-Z]{3}\d{2}(\d{4})', ticker)
+            if m:
+                return m.group(1)
+            return "independent"
+
+        sorted_bets = sorted(all_bets, key=lambda x: -x["edge"])
+        time_groups = {}
+        for b in sorted_bets:
+            ts = _time_slot(b["ticker"])
+            time_groups.setdefault(ts, []).append(b)
+
+        # Check existing resting orders to avoid duplicates
+        existing_orders = kc._request("GET", "/portfolio/orders").get("orders", [])
+        existing_tickers = set(o.get("ticker", "") for o in existing_orders
+                                if o.get("status") in ("resting", "open"))
+
+        for ts, group in sorted(time_groups.items(), key=lambda kv: -max(b["edge"] for b in kv[1])):
+            if placed >= max_bets:
+                break
+            n_simul = len(group)
+            crowding = 1.0 / max(1.0, n_simul ** 0.5)
+
+            for b in group:
+                if placed >= max_bets:
+                    break
+                if b["ticker"] in existing_tickers:
+                    continue
+
+                bal = kc.get_balance()
+                if bal < 1.0:
+                    print("  Balance exhausted, stopping")
+                    break
+
+                edge = b["edge"]
+                if edge < min_edge:
+                    continue
+
+                side = b.get("side", "yes")
+                price_cents = b["price_cents"]
+                market_price = price_cents / 100.0
+
+                # Position sizing (per established config):
+                #   - Full Kelly for binary: f* = edge / (1 - market_price)
+                #   - Quarter-Kelly: ×0.25
+                #   - Hard cap: 3% of bankroll per bet
+                #   - Edge dampener: any edge > 30% signals missing info → halve
+                #   - Crowding: 1/sqrt(N) for simultaneous game-time bets
+                edge_damp = 0.5 if edge > 0.30 else 1.0
+                kelly_full = max(0.0, edge / max(0.001, 1.0 - market_price))
+                kelly_quarter = kelly_full * 0.25
+                kelly_capped = min(kelly_quarter, 0.03) * crowding * edge_damp
+                max_contracts = int(kelly_capped * bal / market_price) if market_price > 0 else 0
+                contracts = max(1, max_contracts) if max_contracts >= 1 else 0
+                cost = market_price * contracts if contracts > 0 else 0.0
+
+                if contracts < 1:
+                    continue
+                if total_exposure + cost > balance * max_exposure_pct:
+                    print(f"  Max exposure (${total_exposure:.2f}/${balance * max_exposure_pct:.2f}), skipping...")
+                    continue
+
+                print(f"  Kelly: f*={kelly_full:.1%} ×0.25={kelly_quarter:.1%} cap=3%  crowd={crowding:.2f} damp={edge_damp:.1f} → {kelly_capped:.2%} ({contracts} ctr @ {price_cents}¢)")
+                if place_with_verify(kc, b["ticker"], side, price_cents, contracts, b["model_prob"]):
+                    placed += 1
+                    total_exposure += cost
+                    time.sleep(2)
+
+    if not auto_bet:
+        print(f"\n  DRY RUN — no orders placed (use --bet to enable)")
+
+    print(f"\n{'='*70}")
+    print(f"  DONE — Balance: ${kc.get_balance():.2f}")
+    print(f"{'='*70}")
+
+
+if __name__ == "__main__":
+    auto = "--bet" in sys.argv
+    bankroll = None
+    for i, a in enumerate(sys.argv):
+        if a == "--bankroll" and i + 1 < len(sys.argv):
+            bankroll = float(sys.argv[i + 1])
+    morning_scan(bankroll=bankroll, auto_bet=auto)

@@ -1,0 +1,356 @@
+import warnings
+warnings.filterwarnings("ignore")
+import pandas as pd
+import numpy as np
+import requests
+import csv
+import io
+from pathlib import Path
+from datetime import datetime, timedelta
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "worldcup"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+ELO_BASE = "https://www.eloratings.net"
+
+ELO_TEAM_URL = f"{ELO_BASE}/en.teams.tsv"
+ELO_TOURNAMENT_URL = f"{ELO_BASE}/en.tournaments.tsv"
+
+def _fetch_tsv(url):
+    r = requests.get(url, timeout=15)
+    lines = [l for l in r.text.strip().split("\n") if not l.startswith("#")]
+    reader = csv.reader(io.StringIO("\n".join(lines)), delimiter="\t")
+    data = [row for row in reader if row]
+    return data
+
+def _build_team_code_map():
+    data = _fetch_tsv(ELO_TEAM_URL)
+    raw_map = {row[0]: row[1] for row in data if len(row) >= 2}
+    code_to_name = {}
+    for code, raw in raw_map.items():
+        name = raw.strip()
+        n = name
+        if n == "United States": n = "USA"
+        elif n == "South Korea": n = "Korea Republic"
+        elif n == "Turkey": n = "Turkiye"
+        elif n == "Czech Republic": n = "Czechia"
+        elif n == "Czechoslovakia": n = "Czechia"
+        elif n == "Côte d'Ivoire": n = "Ivory Coast"
+        elif n == "Cape Verde Islands": n = "Cape Verde"
+        elif n == "IR Iran": n = "Iran"
+        elif n == "Korea DPR": n = "Korea DPR"
+        elif n == "DR Congo": n = "Congo DR"
+        elif n == "Bosnia and Herzegovina": n = "Bosnia and Herzegovina"
+        elif n == "Scotland": n = "Scotland"
+        elif n == "Congo": n = "Congo DR"
+        code_to_name[code] = n
+    return code_to_name
+
+TEAM_CODE_MAP = None
+
+def _get_team_code_map():
+    global TEAM_CODE_MAP
+    if TEAM_CODE_MAP is None:
+        TEAM_CODE_MAP = _build_team_code_map()
+    return TEAM_CODE_MAP
+
+def _code_to_name(code):
+    return _get_team_code_map().get(code, code)
+
+YEARS_TO_FETCH = [2022, 2023, 2024, 2025, 2026]
+
+COLUMNS = ["year","month","day","team1","team2","score1","score2","tournament",
+           "venue","elo_change1","elo1","elo2","elo_change2","rank_change1","rank_change2"]
+
+def fetch_all_matches(force_refetch=False):
+    cache_file = CACHE_DIR / "all_matches.parquet"
+    if cache_file.exists() and not force_refetch:
+        df = pd.read_parquet(cache_file)
+        return df
+
+    team_map = _get_team_code_map()
+    all_rows = []
+    for year in YEARS_TO_FETCH:
+        url = f"{ELO_BASE}/{year}_results.tsv"
+        try:
+            data = _fetch_tsv(url)
+        except Exception as e:
+            continue
+        for row in data:
+            if len(row) < 15:
+                continue
+            try:
+                y, m, d, t1, t2, s1, s2, tourn = row[0], int(row[1]), int(row[2]), row[3], row[4], row[5], row[6], row[7]
+                e1, e2, ec1, ec2 = float(row[10]), float(row[11]), float(row[9]) if row[9] else 0, float(row[12]) if row[12] else 0
+            except (ValueError, IndexError):
+                continue
+            home = team_map.get(t1, t1)
+            away = team_map.get(t2, t2)
+            try:
+                hs, aws = int(s1), int(s2)
+            except ValueError:
+                continue
+            all_rows.append({
+                "match_date": f"{y}-{m:02d}-{d:02d}",
+                "home_team": home,
+                "away_team": away,
+                "home_score": hs,
+                "away_score": aws,
+                "tournament_code": tourn,
+                "elo_home_pre": e1,
+                "elo_away_pre": e2,
+                "elo_home_post": e1 + ec1,
+                "elo_away_post": e2 + ec2,
+                "source": "eloratings",
+            })
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df["match_date"] = pd.to_datetime(df["match_date"])
+    df = df.sort_values("match_date").reset_index(drop=True)
+    df.to_parquet(cache_file)
+    return df
+
+
+def compute_elo(df, k_factor=24):
+    if df.empty:
+        return pd.DataFrame()
+    if "elo_home_pre" in df.columns and "elo_home_post" in df.columns and "source" in df.columns:
+        result = df.rename(columns={
+            "elo_home_pre": "elo_home_pre",
+            "elo_away_pre": "elo_away_pre",
+            "elo_home_post": "elo_home_post",
+            "elo_away_post": "elo_away_post",
+        })
+        return result[["match_date","home_team","away_team","home_score","away_score",
+                        "elo_home_pre","elo_away_pre","elo_home_post","elo_away_post"]].copy()
+
+    elo = {}
+    history = []
+    K = k_factor
+
+    for _, row in df.iterrows():
+        home = row["home_team"]
+        away = row["away_team"]
+        hs, as_ = int(row["home_score"]), int(row["away_score"])
+
+        if home not in elo:
+            elo[home] = CONF_ELO.get(CONF_MAP.get(home, ""), 1500)
+        if away not in elo:
+            elo[away] = CONF_ELO.get(CONF_MAP.get(away, ""), 1500)
+
+        eh = 1.0 / (1.0 + 10.0 ** ((elo[away] - elo[home]) / 400.0))
+        ea = 1.0 - eh
+
+        if hs > as_:
+            sh, sa = 1.0, 0.0
+        elif as_ > hs:
+            sh, sa = 0.0, 1.0
+        else:
+            sh, sa = 0.5, 0.5
+
+        elo[home] += K * (sh - eh)
+        elo[away] += K * (sa - ea)
+
+        history.append({
+            "match_date": row["match_date"],
+            "home_team": home, "away_team": away,
+            "home_score": hs, "away_score": as_,
+            "elo_home_pre": eh, "elo_away_pre": ea,
+            "elo_home_post": elo[home], "elo_away_post": elo[away],
+        })
+
+    return pd.DataFrame(history)
+
+
+CONF_ELO = {
+    "UEFA": 1600, "CONMEBOL": 1580,
+    "CONCACAF": 1420, "CAF": 1440, "AFC": 1380, "OFC": 1300,
+}
+
+CONF_MAP = {
+    "USA":"CONCACAF","Mexico":"CONCACAF","Canada":"CONCACAF",
+    "Panama":"CONCACAF","Costa Rica":"CONCACAF","Jamaica":"CONCACAF",
+    "Honduras":"CONCACAF","El Salvador":"CONCACAF","Suriname":"CONCACAF","Curacao":"CONCACAF",
+    "Argentina":"CONMEBOL","Brazil":"CONMEBOL","Uruguay":"CONMEBOL","Colombia":"CONMEBOL",
+    "Ecuador":"CONMEBOL","Peru":"CONMEBOL","Paraguay":"CONMEBOL","Venezuela":"CONMEBOL",
+    "Chile":"CONMEBOL","Bolivia":"CONMEBOL",
+    "England":"UEFA","Spain":"UEFA","Germany":"UEFA","France":"UEFA","Portugal":"UEFA",
+    "Netherlands":"UEFA","Belgium":"UEFA","Croatia":"UEFA","Italy":"UEFA","Switzerland":"UEFA",
+    "Denmark":"UEFA","Austria":"UEFA","Turkiye":"UEFA","Sweden":"UEFA","Poland":"UEFA",
+    "Czechia":"UEFA","Ukraine":"UEFA","Serbia":"UEFA","Norway":"UEFA","Scotland":"UEFA",
+    "Slovakia":"UEFA","Romania":"UEFA","Hungary":"UEFA","Slovenia":"UEFA","Greece":"UEFA",
+    "Bosnia and Herzegovina":"UEFA",
+    "Japan":"AFC","Korea Republic":"AFC","Australia":"AFC","Iran":"AFC","Saudi Arabia":"AFC",
+    "Uzbekistan":"AFC","Iraq":"AFC","Jordan":"AFC","Qatar":"AFC","United Arab Emirates":"AFC","Korea DPR":"AFC",
+    "Senegal":"CAF","Morocco":"CAF","Nigeria":"CAF","Egypt":"CAF","Tunisia":"CAF",
+    "Algeria":"CAF","Congo DR":"CAF","Ghana":"CAF","Cameroon":"CAF","South Africa":"CAF",
+    "Mali":"CAF","Ivory Coast":"CAF","Burkina Faso":"CAF","Guinea":"CAF",
+    "New Zealand":"OFC","Fiji":"OFC","New Caledonia":"OFC",
+    "Cape Verde":"CAF",
+}
+
+WC2026_TEAMS = [
+    "USA", "Mexico", "Canada",
+    "Argentina", "Brazil", "Uruguay", "Colombia", "Ecuador",
+    "Peru", "Paraguay", "Venezuela", "Chile", "Bolivia",
+    "England", "Spain", "Germany", "France", "Portugal",
+    "Netherlands", "Belgium", "Croatia", "Italy", "Switzerland",
+    "Denmark", "Austria", "Turkiye", "Sweden", "Poland",
+    "Czechia", "Ukraine", "Serbia", "Norway", "Scotland",
+    "Slovakia", "Romania", "Hungary", "Slovenia", "Greece",
+    "Japan", "Korea Republic", "Australia", "Iran", "Saudi Arabia",
+    "Uzbekistan", "Iraq", "Jordan", "Qatar", "United Arab Emirates",
+    "Senegal", "Morocco", "Nigeria", "Egypt", "Tunisia",
+    "Algeria", "Congo DR", "Ghana", "Cameroon", "South Africa",
+    "Mali", "Ivory Coast", "Burkina Faso", "Guinea",
+    "Panama", "Costa Rica", "Jamaica", "Honduras", "El Salvador",
+    "New Zealand", "Fiji",
+    "Suriname", "Cape Verde", "New Caledonia", "Curacao",
+    "Korea DPR", "Bosnia and Herzegovina",
+]
+
+def build_feature_dataset(elo_df):
+    if elo_df.empty:
+        return pd.DataFrame()
+    records = []
+    team_cache = {}
+
+    for _, row in elo_df.iterrows():
+        date = row["match_date"]
+        home, away = row["home_team"], row["away_team"]
+        hs, as_ = int(row["home_score"]), int(row["away_score"])
+
+        team_cache.setdefault(home, [])
+        team_cache.setdefault(away, [])
+
+        def recent_form(team, before, n=5):
+            mlist = [m for m in reversed(team_cache.get(team, [])) if m["date"] < before][:n]
+            if not mlist:
+                return 0.0, 0.0, 0.0, 0.0, 0
+            wins = sum(1 for m in mlist if m["won"])
+            draws = sum(1 for m in mlist if m["draw"])
+            gs = sum(m["gs"] for m in mlist)
+            gc = sum(m["gc"] for m in mlist)
+            return wins / len(mlist), draws / len(mlist), gs / len(mlist), gc / len(mlist), len(mlist)
+
+        hwr, hdr, hgs, hgc, hn = recent_form(home, date)
+        awr, adr, ags, agc, an = recent_form(away, date)
+
+        hw, aw, d_ = (1, 0, 0) if hs > as_ else ((0, 1, 0) if as_ > hs else (0, 0, 1))
+
+        records.append({
+            "match_date": date,
+            "home_team": home, "away_team": away,
+            "home_score": hs, "away_score": as_,
+            "elo_home": row["elo_home_pre"],
+            "elo_away": row["elo_away_pre"],
+            "elo_diff": row["elo_home_pre"] - row["elo_away_pre"],
+            "h_wr": hwr, "h_dr": hdr, "h_gs": hgs, "h_gc": hgc, "h_n": hn,
+            "a_wr": awr, "a_dr": adr, "a_gs": ags, "a_gc": agc, "a_n": an,
+            "home_won": hw, "draw": d_, "away_won": aw,
+        })
+
+        team_cache[home].append({"date": date, "won": hw, "draw": d_, "gs": hs, "gc": as_})
+        team_cache[away].append({"date": date, "won": aw, "draw": d_, "gs": as_, "gc": hs})
+
+    return pd.DataFrame(records)
+
+
+def get_elo_for_teams(elo_df, target_teams, as_of_date=None):
+    latest = {}
+    if as_of_date is None and not elo_df.empty:
+        as_of_date = elo_df["match_date"].max()
+
+    for _, row in elo_df.iterrows():
+        if as_of_date and row["match_date"] > pd.Timestamp(as_of_date):
+            continue
+        latest[row["home_team"]] = row["elo_home_post"]
+        latest[row["away_team"]] = row["elo_away_post"]
+
+    result = {}
+    for team in target_teams:
+        if team in latest:
+            result[team] = latest[team]
+        else:
+            result[team] = CONF_ELO.get(CONF_MAP.get(team, ""), 1500)
+    return result
+
+
+def get_known_elo_teams(elo_df):
+    teams = set()
+    for _, row in elo_df.iterrows():
+        teams.add(row["home_team"])
+        teams.add(row["away_team"])
+    return teams
+
+
+def prepare_training_data(force_refetch=False):
+    df = fetch_all_matches(force_refetch)
+    if df.empty:
+        return None, None, None
+
+    elo_df = compute_elo(df)
+    feat_df = build_feature_dataset(elo_df)
+
+    teams_in_data = set(feat_df["home_team"].unique()) | set(feat_df["away_team"].unique())
+    covered = [t for t in WC2026_TEAMS if t in teams_in_data]
+    missing = [t for t in WC2026_TEAMS if t not in teams_in_data]
+
+    return df, elo_df, feat_df
+
+class WorldCupDataSource:
+    """Wrapper class for World Cup ELO data source.
+    Each match is split into two rows (home_team, away_team) so
+    player_id = team name and each team has many historical games.
+    """
+    
+    def fetch_player_game_logs(self, seasons: list[str]) -> pd.DataFrame:
+        from src.data.world_cup import fetch_all_matches
+        df = fetch_all_matches()
+        if df.empty:
+            return df
+        
+        # Split each match into home and away rows
+        home_rows = df.copy()
+        home_rows["player_id"] = home_rows["home_team"]
+        home_rows["goals_for"] = home_rows["home_score"]
+        home_rows["goals_against"] = home_rows["away_score"]
+        home_rows["is_home"] = 1
+        home_rows["opponent"] = home_rows["away_team"]
+        home_rows["elo_pre"] = home_rows["elo_home_pre"]
+        home_rows["opponent_elo_pre"] = home_rows["elo_away_pre"]
+        home_rows["total_goals"] = home_rows["home_score"] + home_rows["away_score"]
+        home_rows["game_date"] = home_rows["match_date"]
+        home_rows["season"] = home_rows["match_date"].dt.year.astype(str)
+        
+        away_rows = df.copy()
+        away_rows["player_id"] = away_rows["away_team"]
+        away_rows["goals_for"] = away_rows["away_score"]
+        away_rows["goals_against"] = away_rows["home_score"]
+        away_rows["is_home"] = 0
+        away_rows["opponent"] = away_rows["home_team"]
+        away_rows["elo_pre"] = away_rows["elo_away_pre"]
+        away_rows["opponent_elo_pre"] = away_rows["elo_home_pre"]
+        away_rows["total_goals"] = away_rows["home_score"] + away_rows["away_score"]
+        away_rows["game_date"] = away_rows["match_date"]
+        away_rows["season"] = away_rows["match_date"].dt.year.astype(str)
+        
+        result = pd.concat([home_rows, away_rows], ignore_index=True)
+        result = result.sort_values(["player_id", "game_date"]).reset_index(drop=True)
+        
+        print(f"  World Cup: {len(result)} team-game rows from {len(df)} matches, {result['player_id'].nunique()} teams")
+        return result
+    
+    def fetch_schedule(self, season: str) -> pd.DataFrame:
+        return self.fetch_player_game_logs([season])
+    
+    def fetch_player_stats(self, player_id: str, start_date, end_date) -> pd.DataFrame:
+        return pd.DataFrame()
+    
+    def fetch_team_stats(self, team_id, start_date, end_date) -> pd.DataFrame:
+        return pd.DataFrame()

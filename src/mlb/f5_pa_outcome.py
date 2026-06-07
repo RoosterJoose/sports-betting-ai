@@ -46,24 +46,25 @@ OUTCOME_MAP = {
 }
 OUTCOME_NAMES = {v: k for k, v in OUTCOME_MAP.items()}
 
-# Park factors for K (higher = more pitcher-friendly)
+# Park factors for K — using Statcast team codes (verified from actual data)
+# Higher = more pitcher-friendly (more Ks)
 PARK_FACTOR_K = {
     "SD": 1.08, "SEA": 1.06, "NYM": 1.04, "MIA": 1.03, "CLE": 1.02,
-    "OAK": 1.02, "TB": 1.01, "SF": 1.01, "WSH": 1.00, "DET": 1.00,
+    "ATH": 1.02, "TB": 1.01, "SF": 1.01, "WSH": 1.00, "DET": 1.00,
     "MIL": 0.99, "BAL": 0.99, "KC": 0.99, "MIN": 0.99, "PIT": 0.99,
     "LAA": 0.98, "PHI": 0.98, "CIN": 0.98, "ATL": 0.97, "CHC": 0.97,
     "TEX": 0.97, "BOS": 0.97, "TOR": 0.96, "HOU": 0.96, "STL": 0.96,
-    "ARI": 0.95, "NYY": 0.95, "LAD": 0.94, "CWS": 0.93, "COL": 0.88,
+    "AZ": 0.95, "NYY": 0.95, "LAD": 0.94, "CWS": 0.93, "COL": 0.88,
 }
 
-# Park factors for HR (lower = more HR-suppressing)
+# Park factors for HR (lower = more HR-suppressing) — Statcast codes
 PARK_FACTOR_HR = {
     "COL": 1.28, "CIN": 1.14, "BOS": 1.12, "NYY": 1.10, "BAL": 1.09,
     "CHC": 1.07, "MIL": 1.06, "MIN": 1.05, "TEX": 1.04, "HOU": 1.04,
-    "CLE": 1.04, "LAA": 1.03, "PHI": 1.03, "ARI": 1.02, "TB": 1.01,
+    "CLE": 1.04, "LAA": 1.03, "PHI": 1.03, "AZ": 1.02, "TB": 1.01,
     "ATL": 1.01, "WSH": 1.00, "DET": 1.00, "KC": 1.00, "STL": 1.00,
     "PIT": 0.99, "NYY": 0.99, "MIA": 0.98, "SEA": 0.98, "LAD": 0.97,
-    "SD": 0.96, "SF": 0.95, "OAK": 0.95, "TOR": 0.94, "NYM": 0.93,
+    "SD": 0.96, "SF": 0.95, "ATH": 0.95, "TOR": 0.94, "NYM": 0.93,
 }
 
 MLB_TEAM_CODES = {
@@ -190,45 +191,90 @@ def add_rolling_features(pa_df: pd.DataFrame) -> pd.DataFrame:
     if pa_df.empty:
         return pa_df
     
-    print(f"  Using context-only features (v1) for {len(pa_df)} PAs", flush=True)
+    print(f"  Adding rolling features for {len(pa_df)} PAs", flush=True)
     
-    # Compute batter rolling stats within the Statcast data itself
-    # (pitcher/batter-level averages over the dataset)
-    pa_df = pa_df.sort_values(["pitcher", "game_date"]).reset_index(drop=True)
+    # Sort by game_date globally first for proper temporal ordering
+    pa_df = pa_df.sort_values("game_date").reset_index(drop=True)
     
-    # Per-pitcher rolling K rate (within Statcast data)
-    # This gives an approximate K% context for each pitcher
+    # Compute indicator columns
     pa_df["pitcher_is_k"] = (pa_df["outcome_code"] == 7).astype(int)
-    pa_df["pitcher_k_rate_prior"] = pa_df.groupby("pitcher")["pitcher_is_k"].transform(
-        lambda x: x.shift(1).expanding().mean().fillna(0.22)  # MLB avg K%
-    )
+    pa_df["pitcher_is_bb"] = (pa_df["outcome_code"] == 5).astype(int)
+    pa_df["pitcher_is_hr"] = (pa_df["outcome_code"] == 4).astype(int)
+    
+    # Build rolling features with explicit per-group computation
+    # to avoid pandas groupby/transform/index alignment edge cases
+    
+    # Per-pitcher rolling K rate
+    pa_df["pitcher_k_rate_prior"] = 0.22  # default
+    for pid in pa_df["pitcher"].unique():
+        mask = pa_df["pitcher"] == pid
+        idx = pa_df.index[mask]
+        sorted_idx = idx.sort_values()  # already sorted by game_date
+        vals = pa_df.loc[sorted_idx, "pitcher_is_k"].values
+        for i, actual_idx in enumerate(sorted_idx):
+            if i == 0:
+                pa_df.at[actual_idx, "pitcher_k_rate_prior"] = 0.22
+            else:
+                prior = vals[:i].mean()
+                pa_df.at[actual_idx, "pitcher_k_rate_prior"] = prior
     
     # Per-pitcher rolling BB rate
-    pa_df["pitcher_is_bb"] = (pa_df["outcome_code"] == 5).astype(int)
-    pa_df["pitcher_bb_rate_prior"] = pa_df.groupby("pitcher")["pitcher_is_bb"].transform(
-        lambda x: x.shift(1).expanding().mean().fillna(0.08)  # MLB avg BB%
-    )
+    pa_df["pitcher_bb_rate_prior"] = 0.08
+    for pid in pa_df["pitcher"].unique():
+        mask = pa_df["pitcher"] == pid
+        idx = pa_df.index[mask]
+        sorted_idx = idx.sort_values()
+        vals = pa_df.loc[sorted_idx, "pitcher_is_bb"].values
+        for i, actual_idx in enumerate(sorted_idx):
+            if i == 0:
+                pa_df.at[actual_idx, "pitcher_bb_rate_prior"] = 0.08
+            else:
+                prior = vals[:i].mean()
+                pa_df.at[actual_idx, "pitcher_bb_rate_prior"] = prior
     
     # Per-pitcher rolling HR rate
-    pa_df["pitcher_is_hr"] = (pa_df["outcome_code"] == 4).astype(int)
-    pa_df["pitcher_hr_rate_prior"] = pa_df.groupby("pitcher")["pitcher_is_hr"].transform(
-        lambda x: x.shift(1).expanding().mean().fillna(0.03)  # MLB avg HR/PA
-    )
+    pa_df["pitcher_hr_rate_prior"] = 0.03
+    for pid in pa_df["pitcher"].unique():
+        mask = pa_df["pitcher"] == pid
+        idx = pa_df.index[mask]
+        sorted_idx = idx.sort_values()
+        vals = pa_df.loc[sorted_idx, "pitcher_is_hr"].values
+        for i, actual_idx in enumerate(sorted_idx):
+            if i == 0:
+                pa_df.at[actual_idx, "pitcher_hr_rate_prior"] = 0.03
+            else:
+                prior = vals[:i].mean()
+                pa_df.at[actual_idx, "pitcher_hr_rate_prior"] = prior
     
-    # Per-batter rolling K rate
-    pa_df["batter_is_k"] = pa_df["pitcher_is_k"]
-    pa_df["batter_k_rate_prior"] = pa_df.groupby("batter")["batter_is_k"].transform(
-        lambda x: x.shift(1).expanding().mean().fillna(0.22)
-    )
+    # Per-batter rolling K rate (sorted by batter, then game_date)
+    pa_df["batter_k_rate_prior"] = 0.22
+    bat_sort = pa_df.sort_values(["batter", "game_date"])
+    for bid in pa_df["batter"].unique():
+        mask = bat_sort["batter"] == bid
+        idx = bat_sort.index[mask]
+        vals = pa_df.loc[idx, "pitcher_is_k"].values  # batter's K indicator
+        for j, actual_idx in enumerate(idx):
+            if j == 0:
+                pa_df.at[actual_idx, "batter_k_rate_prior"] = 0.22
+            else:
+                prior = vals[:j].mean()
+                pa_df.at[actual_idx, "batter_k_rate_prior"] = prior
     
     # Per-batter rolling BB rate
-    pa_df["batter_is_bb"] = pa_df["pitcher_is_bb"]
-    pa_df["batter_bb_rate_prior"] = pa_df.groupby("batter")["batter_is_bb"].transform(
-        lambda x: x.shift(1).expanding().mean().fillna(0.08)
-    )
+    pa_df["batter_bb_rate_prior"] = 0.08
+    for bid in pa_df["batter"].unique():
+        mask = bat_sort["batter"] == bid
+        idx = bat_sort.index[mask]
+        vals = pa_df.loc[idx, "pitcher_is_bb"].values
+        for j, actual_idx in enumerate(idx):
+            if j == 0:
+                pa_df.at[actual_idx, "batter_bb_rate_prior"] = 0.08
+            else:
+                prior = vals[:j].mean()
+                pa_df.at[actual_idx, "batter_bb_rate_prior"] = prior
     
-    # Drop intermediate columns
-    for col in ["pitcher_is_k", "pitcher_is_bb", "pitcher_is_hr", "batter_is_k", "batter_is_bb"]:
+    # Drop intermediate indicator columns
+    for col in ["pitcher_is_k", "pitcher_is_bb", "pitcher_is_hr"]:
         if col in pa_df.columns:
             pa_df.drop(columns=[col], inplace=True)
     

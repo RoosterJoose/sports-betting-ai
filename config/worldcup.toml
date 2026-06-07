@@ -1,0 +1,20 @@
+[sport]
+name = "worldcup"
+display_name = "World Cup 2026"
+
+[prizepicks]
+leagues = { generic = 457 }
+
+[stat_types]
+single = ["GOALS_FOR", "GOALS_AGAINST", "TOTAL_GOALS"]
+combined = []
+
+[features]
+rolling_windows = [5, 10, 20]
+season_lookback = 5
+min_games_for_features = 5
+recency_decay = 0.001
+
+[model]
+max_line_diff = 3.0
+max_edge_override = 0.15

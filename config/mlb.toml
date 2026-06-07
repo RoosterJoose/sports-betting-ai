@@ -1,0 +1,19 @@
+[sport]
+name = "mlb"
+display_name = "MLB"
+prizepicks_league_id = 2
+
+[stat_types]
+single = ["H", "TB", "SO", "HR", "RBI", "BB", "SB", "ER", "IP", "R", "2B", "1B", "3B", "HA", "BB_ALLOWED", "OUTS"]
+combined = ["H+BB", "SO+BB", "H+R+RBI"]
+
+[features]
+rolling_windows = [7, 14, 30]
+season_lookback = 2
+min_games_for_features = 10
+opponent_adjusted = true
+recency_decay = 0.001
+
+[model]
+max_line_diff = 3.0
+max_edge_override = 0.12

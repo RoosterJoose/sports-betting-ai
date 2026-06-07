@@ -1,0 +1,21 @@
+[sport]
+name = "tennis"
+display_name = "Tennis"
+
+[prizepicks]
+leagues = { atp_wta = 5 }
+
+[stat_types]
+single = ["ACES", "DOUBLE_FAULTS", "BREAK_POINTS_WON", "TOTAL_GAMES", "GAMES_WON", "TOTAL_SETS"]
+combined = ["SERVICE_GAMES_WON", "RETURN_GAMES_WON"]
+
+[features]
+rolling_windows = [5, 10, 20]
+season_lookback = 2
+min_matches_for_features = 5
+recency_decay = 0.002
+surface_adjusted = true
+
+[model]
+max_line_diff = 3.0
+max_edge_override = 0.15

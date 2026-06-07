@@ -1,0 +1,21 @@
+[sport]
+name = "soccer"
+display_name = "Soccer / MLS"
+
+[prizepicks]
+leagues = { generic = 82, epl = 14, ucl = 241, world_cup = 457 }
+
+[stat_types]
+single = ["GOALS", "ASSISTS", "SHOTS", "SHOTS_ON_TARGET", "PASSES", "TACKLES", "CLEARANCES", "FOULS", "SAVES", "GOALS_ALLOWED"]
+combined = ["GOALS+ASSISTS", "SHOTS_ON_TARGET"]
+
+[features]
+rolling_windows = [5, 10, 20]
+season_lookback = 3
+min_games_for_features = 5
+recency_decay = 0.001
+xG_adjusted = true
+
+[model]
+max_line_diff = 3.0
+max_edge_override = 0.12

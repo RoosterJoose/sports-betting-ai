@@ -1,0 +1,20 @@
+[sport]
+name = "golf"
+display_name = "PGA Golf"
+
+[prizepicks]
+leagues = { pga = 1, liv = 228, lpga = 256 }
+
+[stat_types]
+single = ["SCORING_AVG", "DRIVING_DIST", "GIR", "SCRAMBLING", "PUTTING_AVG", "SG_OTT", "SG_APP"]
+combined = []
+
+[features]
+rolling_windows = []
+season_lookback = 2
+min_games_for_features = 0
+
+
+[model]
+max_line_diff = 5.0
+max_edge_override = 0.15

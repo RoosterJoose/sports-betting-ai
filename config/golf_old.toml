@@ -1,0 +1,20 @@
+[sport]
+name = "golf"
+display_name = "PGA Golf"
+
+[prizepicks]
+leagues = { pga = 1, liv = 228, lpga = 256 }
+
+[stat_types]
+single = ["BIRDIES_OR_BETTER", "FINISHING_POSITION", "STROKES", "MADE_CUT", "TOP_10", "TOP_20"]
+combined = ["STROKES_Gained", "SG_OTT", "SG_APP", "SG_ARG", "SG_PUTT"]
+
+[features]
+rolling_windows = [5, 10, 20]
+season_lookback = 2
+min_rounds_for_features = 4
+recency_decay = 0.002
+
+[model]
+max_line_diff = 5.0
+max_edge_override = 0.15

@@ -1,0 +1,20 @@
+[sport]
+name = "nascar"
+display_name = "NASCAR"
+
+[prizepicks]
+leagues = { cup = 4 }
+
+[stat_types]
+single = ["FINISHING_POSITION", "LAPS_LED", "TOP_5", "TOP_10", "TOP_20", "STAGE_POINTS"]
+combined = ["LAPS_COMPLETED"]
+
+[features]
+rolling_windows = [3, 6, 12]
+season_lookback = 3
+min_races_for_features = 3
+recency_decay = 0.003
+
+[model]
+max_line_diff = 10.0
+max_edge_override = 0.15

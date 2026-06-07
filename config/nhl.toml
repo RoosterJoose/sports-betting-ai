@@ -1,0 +1,19 @@
+[sport]
+name = "nhl"
+display_name = "NHL"
+prizepicks_league_id = 8
+
+[stat_types]
+single = ["GOALS", "ASSISTS", "POINTS", "SHOTS"]
+combined = ["GOALS+ASSISTS", "PIM"]
+
+[features]
+rolling_windows = [5, 10, 20]
+season_lookback = 3
+min_games_for_features = 5
+opponent_adjusted = true
+recency_decay = 0.001
+
+[model]
+max_line_diff = 2.0
+max_edge_override = 0.12

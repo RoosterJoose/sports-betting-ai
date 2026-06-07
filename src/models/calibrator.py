@@ -1,0 +1,92 @@
+import json
+import warnings
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from scipy.special import expit, logit
+from scipy.stats import norm
+
+
+class PlattCalibrator:
+    """Platt scaling for binary classifier probability calibration.
+
+    Learns logistic calibration: P_calibrated = 1/(1 + exp(A * logit(P_raw) + B))
+    """
+
+    def __init__(self):
+        self.A = 1.0
+        self.B = 0.0
+
+    def fit(self, probs: np.ndarray, labels: np.ndarray):
+        from sklearn.linear_model import LogisticRegression
+        logits = logit(np.clip(probs, 1e-6, 1 - 1e-6)).reshape(-1, 1)
+        lr = LogisticRegression(C=1e6, solver="lbfgs")
+        lr.fit(logits, labels)
+        self.A = float(lr.coef_[0, 0])
+        self.B = float(lr.intercept_[0])
+
+    def calibrate(self, probs: np.ndarray) -> np.ndarray:
+        logits = logit(np.clip(probs, 1e-6, 1 - 1e-6)) * self.A + self.B
+        return expit(logits)
+
+    def save(self, path: Path):
+        with open(path, "w") as f:
+            json.dump({"A": self.A, "B": self.B}, f)
+
+    @classmethod
+    def load(cls, path: Path):
+        if not path.exists():
+            return cls()
+        with open(path) as f:
+            data = json.load(f)
+        c = cls()
+        c.A = data.get("A", 1.0)
+        c.B = data.get("B", 0.0)
+        return c
+
+    def __call__(self, prob: float) -> float:
+        if prob <= 0 or prob >= 1:
+            return prob
+        logit_val = np.log(prob / (1 - prob)) * self.A + self.B
+        return 1.0 / (1.0 + np.exp(-logit_val))
+
+
+class EmpiricalCalibrator:
+    """Empirical calibration for regressor-based probability estimates.
+
+    Replaces theoretical normal CDF with empirical calibration tables
+    built from test set outcomes.
+    """
+
+    def __init__(self, cal_dir: Path):
+        self.cal_dir = Path(cal_dir)
+        self.calibration: dict[str, dict] = {}
+        self._load_all()
+
+    def _load_all(self):
+        for f in self.cal_dir.glob("*_empirical.json"):
+            stat = f.name.replace("_empirical.json", "")
+            with open(f) as fh:
+                self.calibration[stat] = json.load(fh)
+
+    def calibrate(self, stat_type: str, line: int, p_raw: float) -> float:
+        """Map raw normal-CDF probability to empirically calibrated probability."""
+        cal = self.calibration.get(stat_type.lower(), {})
+        line_key = str(line)
+        bins = cal.get(line_key, {}).get("bins", [])
+        if not bins:
+            return max(0.001, min(0.999, p_raw))
+
+        for bin_ in bins:
+            if bin_["p_pred_min"] <= p_raw < bin_["p_pred_max"]:
+                return max(0.001, min(0.999, bin_["p_actual"]))
+        if p_raw >= bins[-1]["p_pred_max"]:
+            return max(0.001, min(0.999, bins[-1]["p_actual"]))
+        return max(0.001, min(0.999, p_raw))
+
+    @staticmethod
+    def p_ge_line_raw(mu: float, sigma: float, line_val: float) -> float:
+        """Raw probability via normal CDF (before calibration)."""
+        p = 1.0 - norm.cdf((line_val - 0.5 - mu) / max(sigma, 0.3))
+        return max(0.001, min(0.999, float(p)))

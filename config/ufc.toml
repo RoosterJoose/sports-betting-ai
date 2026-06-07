@@ -1,0 +1,20 @@
+[sport]
+name = "ufc"
+display_name = "UFC / MMA"
+
+[prizepicks]
+leagues = { ufc = 12 }
+
+[stat_types]
+single = ["SIGNIFICANT_STRIKES", "TAKEDOWNS", "KNOCKDOWN_WIN", "FIGHT_MINUTES"]
+combined = []
+
+[features]
+rolling_windows = [3, 5]
+season_lookback = 5
+min_fights_for_features = 3
+recency_decay = 0.005
+
+[model]
+max_line_diff = 15.0
+max_edge_override = 0.15

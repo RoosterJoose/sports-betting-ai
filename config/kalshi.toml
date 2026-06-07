@@ -1,0 +1,32 @@
+[exchange]
+name = "kalshi"
+base_url = "https://api.elections.kalshi.com/trade-api/v2"
+ws_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+rate_limit = 100
+rate_window_seconds = 60
+
+[fees]
+taker_multiplier = 0.07
+maker_multiplier = 0.0175
+finance_multiplier = 0.5
+politics_fee = 0.0
+
+[limits]
+min_price = 0.01
+max_price = 0.99
+tick_size = 0.01
+
+[strategies.safe_compounder]
+enabled = true
+max_yes_price = 0.20
+min_no_ask = 0.80
+min_edge_cents = 5
+order_type = "maker"
+price_buffer_cents = 1
+blocked_categories = ["Sports", "Entertainment"]
+
+[strategies.ml_probability]
+enabled = true
+min_confidence = 0.45
+category_score_threshold = 30
+position_sizing = "quarter_kelly"

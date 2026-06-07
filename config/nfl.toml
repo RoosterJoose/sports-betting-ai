@@ -1,0 +1,16 @@
+[sport]
+name = "nfl"
+display_name = "NFL"
+prizepicks_league_id = 9
+
+[stat_types]
+single = ["PASS_YDS", "RUSH_YDS", "REC_YDS", "REC", "TD", "PASS_TD", "INT", "PASS_ATT"]
+combined = ["PASS_YDS+TD", "RUSH+REC_YDS"]
+
+[features]
+rolling_windows = [4, 8, 16]
+season_lookback = 5
+min_games_for_features = 4
+opponent_adjusted = true
+recency_decay = 0.001
+use_pff = false
