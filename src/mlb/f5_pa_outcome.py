@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 from src.config.settings import PROJECT_ROOT
+from src.data.mlb_pitching_stats import fetch_multiyear_pitching_stats, merge_pitching_stats_into_pa
 
 MODEL_DIR = PROJECT_ROOT / "models" / "mlb"
 STATCAST_DIR = PROJECT_ROOT / "data" / "cache" / "mlb" / "statcast"
@@ -436,12 +437,20 @@ def main():
         print("  No data available!")
         return
     
-    print(f"\n2. Adding rolling features...")
+    print(f"\n2. Fetching MLB pitcher stats (FIP, K/9, BB/9)...")
+    pitching_df = fetch_multiyear_pitching_stats([2024, 2025], min_ip=30)
+    if not pitching_df.empty:
+        print(f"\n3. Merging FIP data into PA dataset...")
+        pa_df = merge_pitching_stats_into_pa(pa_df, pitching_df)
+    else:
+        print("  No pitching stats available, skipping FIP features")
+    
+    print(f"\n4. Adding rolling features...")
     pa_df = add_rolling_features(pa_df)
     
     print(f"\n  Final dataset: {len(pa_df)} rows, {pa_df.select_dtypes(include=[np.number]).shape[1]} numeric columns")
     
-    print(f"\n3. Training model...")
+    print(f"\n5. Training model...")
     result = train_pa_model(pa_df)
     
     print(f"\n  Done! Model ready for F5 Monte Carlo simulation.")
