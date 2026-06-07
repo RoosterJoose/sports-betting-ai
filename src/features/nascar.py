@@ -34,30 +34,33 @@ class NASCARFeatureEngineer(FeatureEngineer):
                 )
 
         # Track-type-specific averages
-        for tt in df["track_type"].unique():
-            tt_mask = df["track_type"] == tt
-            filtered = df[tt_mask].copy()
-            filtered["tt_avg_finish"] = (
-                filtered.groupby("driver_name")["finish_position"]
-                .transform(lambda x: x.shift(1).expanding().mean())
-            )
-            df[f"tt_{tt}_avg"] = df.merge(
-                filtered[["driver_name", "race_number", "tt_avg_finish"]],
-                on=["driver_name", "race_number"],
-                how="left"
-            )["tt_avg_finish"].fillna(20.0)
+        if "track_type" in df.columns:
+            for tt in df["track_type"].unique():
+                tt_mask = df["track_type"] == tt
+                filtered = df[tt_mask].copy()
+                filtered["tt_avg_finish"] = (
+                    filtered.groupby("driver_name")["finish_position"]
+                    .transform(lambda x: x.shift(1).expanding().mean())
+                )
+                df[f"tt_{tt}_avg"] = df.merge(
+                    filtered[["driver_name", "race_number", "tt_avg_finish"]],
+                    on=["driver_name", "race_number"],
+                    how="left"
+                )["tt_avg_finish"].fillna(20.0)
 
         # Team consistency features
-        df["team_avg_finish"] = (
-            df.groupby("team")["finish_position"]
-            .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
-            .fillna(20)
-        )
-        df["manufacturer_avg_finish"] = (
-            df.groupby("manufacturer")["finish_position"]
-            .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
-            .fillna(20)
-        )
+        if "team" in df.columns:
+            df["team_avg_finish"] = (
+                df.groupby("team")["finish_position"]
+                .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+                .fillna(20)
+            )
+        if "manufacturer" in df.columns:
+            df["manufacturer_avg_finish"] = (
+                df.groupby("manufacturer")["finish_position"]
+                .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+                .fillna(20)
+            )
 
         # Recent form (last 3 races, weighted heavier)
         df["form_recent"] = (
@@ -85,21 +88,92 @@ class NASCARFeatureEngineer(FeatureEngineer):
                 df["car_number_int"] = 0
 
         # Starting position rolling averages (shift(1) prevents leakage)
-        df["avg_start_pos_5"] = (
-            df.groupby("driver_name")["starting_position"]
-            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-            .fillna(20)
-        )
-        df["avg_start_pos_10"] = (
-            df.groupby("driver_name")["starting_position"]
-            .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
-            .fillna(20)
-        )
-        df["avg_start_pos_20"] = (
-            df.groupby("driver_name")["starting_position"]
-            .transform(lambda x: x.shift(1).rolling(20, min_periods=1).mean())
-            .fillna(20)
-        )
+        for col in ["starting_position", "start_position"]:
+            if col in df.columns:
+                for window in [5, 10, 20]:
+                    df[f"avg_{col}_{window}"] = (
+                        df.groupby("driver_name")[col]
+                        .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                        .fillna(20)
+                    )
+                break
+
+        # ============================================================
+        # LOOP DATA FEATURES (Driver Rating, Avg Running Position, etc.)
+        # These are merged from nascar_loop.py's output
+        # ============================================================
+        
+        # Rolling Driver Rating features (key feature: r≈0.614 with finish)
+        if "driver_rating" in df.columns:
+            for window in [3, 5, 10]:
+                col = f"roll_driver_rating_{window}"
+                df[col] = (
+                    df.groupby("driver_name")["driver_rating"]
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(70.0)  # Default to league-average rating
+        
+        # Rolling Average Running Position (smaller = better)
+        if "avg_running_position" in df.columns:
+            for window in [3, 5, 10]:
+                col = f"roll_avg_running_pos_{window}"
+                df[col] = (
+                    df.groupby("driver_name")["avg_running_position"]
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(20.0)
+        
+        # Rolling Laps Led Rate
+        if "laps_led" in df.columns and "total_laps" in df.columns:
+            laps_pct = df["laps_led"] / df["total_laps"].replace(0, 1)
+            for window in [3, 5, 10]:
+                col = f"roll_laps_led_rate_{window}"
+                df[col] = (
+                    pd.Series(laps_pct).groupby(df["driver_name"])
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(0)
+        
+        # Rolling Top 15 Laps
+        if "top15_laps" in df.columns:
+            for window in [3, 5, 10]:
+                col = f"roll_top15_laps_{window}"
+                df[col] = (
+                    df.groupby("driver_name")["top15_laps"]
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(0)
+        
+        # Rolling Quality Passes
+        if "quality_passes" in df.columns:
+            for window in [3, 5, 10]:
+                col = f"roll_quality_passes_{window}"
+                df[col] = (
+                    df.groupby("driver_name")["quality_passes"]
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(0)
+        
+        # Rolling Passing Differential
+        if "passing_differential" in df.columns:
+            for window in [3, 5, 10]:
+                col = f"roll_pass_diff_{window}"
+                df[col] = (
+                    df.groupby("driver_name")["passing_differential"]
+                    .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                )
+                df[col] = df[col].fillna(0)
+        
+        # Rolling Percentage features
+        for pct_col in ["pct_quality_passes", "pct_top15_laps"]:
+            if pct_col in df.columns:
+                for window in [3, 5, 10]:
+                    col = f"roll_{pct_col}_{window}"
+                    df[col] = (
+                        df.groupby("driver_name")[pct_col]
+                        .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                    )
+                    df[col] = df[col].fillna(0)
 
         df["player_id"] = df["driver_name"]
         
@@ -114,6 +188,8 @@ class NASCARFeatureEngineer(FeatureEngineer):
                 keep_cols.append(col)
             elif col in ("form_recent", "season_experience", "car_number_int"):
                 keep_cols.append(col)
-            elif col.startswith("avg_start_pos_"):
+            elif col.startswith("avg_start_pos_") or col.startswith("avg_starting_position_"):
+                keep_cols.append(col)
+            elif col.startswith("roll_"):
                 keep_cols.append(col)
         return df[[c for c in keep_cols if c in df.columns]].copy()

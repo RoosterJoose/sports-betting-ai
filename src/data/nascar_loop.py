@@ -34,7 +34,8 @@ RR_TRACK_MAP = {
     "watkins glen": "GLN", "darlington": "DAR", "auto club": "CAL", "texas": "TEX",
     "dover": "DOV", "chicago": "CHI", "nashville": "NSH", "gateway": "GWY",
     "kentucky": "KEN", "iowa": "IOW", "north wilkesboro": "NWS", "road america": "ROA",
-    "cota": "COA", "lucas oil": "LRC", "daytona road": "DAY", "charlotte roval": "ROV",
+    "cota": "COA", "lucas oil": "LRC", "daytona road course": "DAY", "charlotte roval": "ROV",
+    "bristol dirt": "BRI", "nashville": "NSH",
 }
 
 
@@ -42,11 +43,12 @@ def _normalize_driver(name: str) -> str:
     """Normalize driver name to lowercase, stripped of parenthetical annotations."""
     n = re.sub(r"\s*\([^)]*\)\s*", "", name)
     n = re.sub(r"\s*\*+\s*$", "", n)  # trailing asterisks (rookie markers)
+    n = re.sub(r"\s*\#.*$", "", n)    # trailing car number like #24
     return n.strip().lower()
 
 
 def _race_name_to_code(race_name: str) -> str:
-    """Extract track code from a race name like 'Pennzoil 400 presented by Jiffy Lube'."""
+    """Extract track code from a race name."""
     name_lower = race_name.lower()
     for key, code in RR_TRACK_MAP.items():
         if key in name_lower:
@@ -57,102 +59,71 @@ def _race_name_to_code(race_name: str) -> str:
 def fetch_loop_data_season(year: int) -> pd.DataFrame:
     """Fetch loop data for all races in a season from Racing-Reference.
     
+    Iterates race numbers 1-38 directly without needing the schedule page.
+    
     Returns DataFrame with columns:
         race_number, driver_norm, driver_name, track_code, track_name,
-        driver_rating, avg_running_pos, laps_led, fast_laps,
-        start_position, finish_position, laps_completed, points_earned
+        driver_rating, avg_running_pos, laps_led, quality_passes,
+        fast_laps, top15_laps, start_position, finish_position
     """
     cache_file = CACHE_DIR / f"loop_data_{year}.parquet"
     if cache_file.exists():
-        return pd.read_parquet(cache_file)
+        df = pd.read_parquet(cache_file)
+        print(f"  Loaded cached loop data for {year} ({len(df)} rows)", flush=True)
+        return df
 
     print(f"  Fetching Racing-Reference loop data for {year}...", flush=True)
+    print(f"    Iterating race numbers 1-38...", flush=True)
 
-    # Step 1: Get the season schedule to find race URLs
-    schedule_url = f"https://www.racing-reference.info/season-stats/{year}/W/"
-    try:
-        resp = requests.get(schedule_url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"    Schedule error: {e}", flush=True)
-        return pd.DataFrame()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Find race links from the schedule table
-    race_entries = []
-    for table in soup.find_all("table"):
-        rows = table.find_all("tr")
-        if len(rows) < 3:
-            continue
-        # Look for a table with race results links
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) < 3:
-                continue
-            # Check for numeric first cell (race number)
-            first_text = cells[0].get_text(strip=True)
-            try:
-                race_no = int(first_text)
-            except (ValueError, TypeError):
-                continue
-            if race_no < 1 or race_no > 40:
-                continue
-            # Look for link in the second cell (race name)
-            link = cells[1].find("a") if len(cells) > 1 else None
-            if link and link.get("href"):
-                race_entries.append({
-                    "race_number": race_no,
-                    "url": link["href"] if link["href"].startswith("http") else f"https://www.racing-reference.info{link['href']}",
-                    "race_name": link.get_text(strip=True),
-                })
-
-    if not race_entries:
-        # Fallback: try the loop data index
-        print(f"    No schedule entries found via HTML, trying loop index...", flush=True)
-        return pd.DataFrame()
-
-    # Step 2: For each race, fetch the loop data page
     all_races = []
-    for entry in race_entries:
-        race_no = entry["race_number"]
-        race_url = entry["url"]
-        race_name = entry["race_name"]
-
-        # Construct loop data URL
-        # Racing-Reference loop data pattern: https://www.racing-reference.info/loopdata/{year}-{race_no}/W/
+    # NASCAR Cup Series has ~36-38 races per season
+    for race_no in range(1, 39):
         loop_url = f"https://www.racing-reference.info/loopdata/{year}-{race_no:02d}/W/"
         
         try:
             resp = requests.get(loop_url, headers=HEADERS, timeout=15)
             if resp.status_code != 200:
-                time.sleep(0.5)
                 continue
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1.0)
             continue
 
         soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Find the loop data table.
+        # Page has multiple tables with class "tb loopData".
+        # Table index 1 is the data table (40+ rows, 19 columns including DRIVER RATING).
+        loop_tables = soup.find_all("table", class_=["tb", "loopData"])
         loop_table = None
-        for table in soup.find_all("table", class_="tb"):
-            hdrs = [h.get_text(strip=True).lower()[:15] for h in table.find_all("th")]
-            hdrs_str = " ".join(hdrs)
-            if "driver rating" in hdrs_str and "avg running" in hdrs_str:
-                loop_table = table
-                break
+        for t in loop_tables:
+            rows = t.find_all("tr")
+            if len(rows) >= 30:  # Data table has 40+ rows
+                # Check that it has the right headers (Row 2 has the column headers)
+                if len(rows) > 2:
+                    hdrs = [h.get_text(strip=True).lower()[:15] for h in rows[2].find_all(["td", "th"])]
+                    hdrs_str = " ".join(hdrs)
+                    if "driver rating" in hdrs_str and "laps led" in hdrs_str:
+                        loop_table = t
+                        break
 
         if loop_table is None:
-            time.sleep(0.5)
+            time.sleep(0.3)
             continue
 
-        # Parse the loop data table
         rows = loop_table.find_all("tr")
-        if len(rows) < 3:
-            time.sleep(0.5)
+        if len(rows) < 4:
+            time.sleep(0.3)
             continue
 
-        # Get header indices
-        hdrs = [h.get_text(strip=True).lower() for h in rows[0].find_all("th")]
+        # Structure of the loop data table:
+        #   Row 0: merged header with ~800 cells (hidden TH elements) - skip
+        #   Row 1: label row ("Loop data for this race:") - skip
+        #   Row 2: header row (19 cells: Driver, Start, Mid Race, ..., DRIVER RATING)
+        #   Row 3+: data rows (19 cells each)
+        header_row = rows[2]
+        header_cells = header_row.find_all(["td", "th"])
+        hdrs = [c.get_text(strip=True) for c in header_cells]
+        hdrs_lower = [h.lower() for h in hdrs]
         
         def find_col(keywords, hdrs_list):
             for i, h in enumerate(hdrs_list):
@@ -160,52 +131,83 @@ def fetch_loop_data_season(year: int) -> pd.DataFrame:
                     if kw in h:
                         return i
             return -1
+        
+        def safe_float(val, default=0.0):
+            try:
+                return float(re.sub(r"[^\d.\-]", "", val))
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_int(val, default=0):
+            try:
+                return int(re.sub(r"[^\d\-]", "", val))
+            except (ValueError, TypeError):
+                return default
 
-        finish_idx = find_col(["fin", "pos"], hdrs)
-        start_idx = find_col(["start"], hdrs)
-        driver_idx = find_col(["driver"], hdrs)
-        rating_idx = find_col(["driver rating", "rating"], hdrs)
-        avg_run_idx = find_col(["avg run", "average running"], hdrs)
-        laps_led_idx = find_col(["laps led"], hdrs)
-        fast_laps_idx = find_col(["fast laps", "fastest laps"], hdrs)
-        laps_comp_idx = find_col(["laps comp", "laps completed"], hdrs)
+        driver_idx = find_col(["driver"], hdrs_lower)
+        rating_idx = find_col(["driver rating"], hdrs_lower)
+        avg_run_idx = find_col(["avg. pos", "avg. pos.", "avg pos"], hdrs_lower)
+        laps_led_idx = find_col(["laps led"], hdrs_lower)
+        fast_laps_idx = find_col(["fastest lap"], hdrs_lower)
+        top15_idx = find_col(["top 15 laps"], hdrs_lower)
+        qual_idx = find_col(["quality passes"], hdrs_lower)
+        finish_idx = find_col(["finish"], hdrs_lower)
+        start_idx = find_col(["start"], hdrs_lower)
+        total_laps_idx = find_col(["total laps"], hdrs_lower)
+        mid_race_idx = find_col(["mid race"], hdrs_lower)
+        pct_qual_idx = find_col(["pct. quality"], hdrs_lower)
+        pct_top15_idx = find_col(["pct. top 15"], hdrs_lower)
+        green_pass_idx = find_col(["green flag passes"], hdrs_lower)
+        pass_diff_idx = find_col(["pass diff"], hdrs_lower)
+        high_pos_idx = find_col(["high pos"], hdrs_lower)
+        low_pos_idx = find_col(["low pos"], hdrs_lower)
 
         if driver_idx < 0 or rating_idx < 0:
-            time.sleep(0.5)
+            time.sleep(0.3)
             continue
 
-        track_code = _race_name_to_code(race_name)
+        # Extract race name from page title
+        race_name = ""
+        title_tag = soup.find("title")
+        if title_tag:
+            title_text = title_tag.get_text(strip=True)
+            m = re.search(r"Loop Data: \d{4}\s+(.+?)\s*\|", title_text)
+            if m:
+                race_name = m.group(1).strip()
+
+        track_code = _race_name_to_code(race_name) if race_name else "OTHER"
 
         race_drivers = []
-        for row in rows[1:]:
+        for row in rows[3:]:  # Start from Row 3 (first data row)
             cells = row.find_all("td")
-            if len(cells) <= max(driver_idx, rating_idx):
+            if len(cells) < 10:  # Need at least 10 cells to be valid
                 continue
+            
             texts = [c.get_text(strip=True) for c in cells]
-
+            
             driver_name = texts[driver_idx] if driver_idx < len(texts) else ""
-            if not driver_name:
+            if not driver_name or len(driver_name) > 40:
+                continue
+            if driver_name.lower() in ["driver", "loop data for this race:", ""]:
                 continue
 
-            def safe_float(val, default=0.0):
-                try:
-                    return float(re.sub(r"[^\d.]", "", val))
-                except (ValueError, TypeError):
-                    return default
+            rating = safe_float(texts[rating_idx] if rating_idx < len(texts) else "0")
+            avg_run = safe_float(texts[avg_run_idx] if avg_run_idx < len(texts) else "20")
+            laps_led = safe_int(texts[laps_led_idx] if laps_led_idx < len(texts) else "0")
+            fast_laps = safe_int(texts[fast_laps_idx] if fast_laps_idx < len(texts) else "0")
+            top15 = safe_int(texts[top15_idx] if top15_idx < len(texts) else "0")
+            quality_passes = safe_int(texts[qual_idx] if qual_idx < len(texts) else "0")
+            finish = safe_int(texts[finish_idx] if finish_idx < len(texts) else "0")
+            start = safe_int(texts[start_idx] if start_idx < len(texts) else "0")
+            total_laps = safe_int(texts[total_laps_idx] if total_laps_idx < len(texts) else "0")
+            mid_race = safe_int(texts[mid_race_idx] if mid_race_idx < len(texts) else "0")
+            green_passes = safe_int(texts[green_pass_idx] if green_pass_idx < len(texts) else "0")
+            pass_diff = safe_int(texts[pass_diff_idx] if pass_diff_idx < len(texts) else "0")
+            high_pos = safe_int(texts[high_pos_idx] if high_pos_idx < len(texts) else "0")
+            low_pos = safe_int(texts[low_pos_idx] if low_pos_idx < len(texts) else "0")
 
-            def safe_int(val, default=0):
-                try:
-                    return int(re.sub(r"[^\d]", "", val))
-                except (ValueError, TypeError):
-                    return default
-
-            driver_rating = safe_float(texts[rating_idx] if rating_idx >= 0 and rating_idx < len(texts) else "0")
-            avg_running_pos = safe_float(texts[avg_run_idx] if avg_run_idx >= 0 and avg_run_idx < len(texts) else "20")
-            laps_led = safe_int(texts[laps_led_idx] if laps_led_idx >= 0 and laps_led_idx < len(texts) else "0")
-            fast_laps = safe_int(texts[fast_laps_idx] if fast_laps_idx >= 0 and fast_laps_idx < len(texts) else "0")
-            finish = safe_int(texts[finish_idx] if finish_idx >= 0 and finish_idx < len(texts) else "0")
-            start = safe_int(texts[start_idx] if start_idx >= 0 and start_idx < len(texts) else "0")
-            laps_completed = safe_float(texts[laps_comp_idx] if laps_comp_idx >= 0 and laps_comp_idx < len(texts) else "0")
+            pct_quality = safe_float(texts[pct_qual_idx] if pct_qual_idx < len(texts) else "0")
+            pct_top15 = safe_float(texts[pct_top15_idx] if pct_top15_idx < len(texts) else "0")
 
             race_drivers.append({
                 "race_number": race_no,
@@ -213,21 +215,32 @@ def fetch_loop_data_season(year: int) -> pd.DataFrame:
                 "driver_norm": _normalize_driver(driver_name),
                 "track_code": track_code,
                 "track_name": race_name,
-                "driver_rating": driver_rating,
-                "avg_running_position": avg_running_pos,
+                "driver_rating": rating,
+                "avg_running_position": avg_run,
                 "laps_led": laps_led,
                 "fastest_laps": fast_laps,
+                "top15_laps": top15,
+                "quality_passes": quality_passes,
                 "finish_position": finish,
                 "start_position": start,
-                "laps_completed": laps_completed,
+                "mid_race_position": mid_race,
+                "high_position": high_pos,
+                "low_position": low_pos,
+                "green_flag_passes": green_passes,
+                "passing_differential": pass_diff,
+                "total_laps": total_laps,
+                "pct_quality_passes": pct_quality,
+                "pct_top15_laps": pct_top15,
                 "season": str(year),
             })
 
         if race_drivers:
             df_race = pd.DataFrame(race_drivers)
             all_races.append(df_race)
-            if len(race_entries) <= 5 or race_no % 5 == 0:
-                print(f"    Race {race_no:2d}: {len(race_drivers)} drivers", flush=True)
+            top_driver = max(race_drivers, key=lambda x: x["driver_rating"])
+            print(f"    Race {race_no:2d}: {len(race_drivers)} drivers, best rating={top_driver['driver_rating']:.1f} ({top_driver['driver_name']})", flush=True)
+        else:
+            print(f"    Race {race_no:2d}: no drivers parsed", flush=True)
 
         time.sleep(0.5)  # Be respectful to the server
 
@@ -237,7 +250,8 @@ def fetch_loop_data_season(year: int) -> pd.DataFrame:
 
     result = pd.concat(all_races, ignore_index=True)
     result.to_parquet(cache_file, index=False)
-    print(f"  Saved {len(result)} driver-race rows for {year}", flush=True)
+    print(f"  Saved {len(result)} driver-race rows for {year} ({result['driver_norm'].nunique()} drivers, "
+          f"{result['race_number'].nunique()} races)", flush=True)
     return result
 
 
@@ -257,7 +271,6 @@ def fetch_live_qualifying() -> dict:
     Returns {driver_norm: {'position': int, 'speed': float, 'best_time': float}}.
     """
     try:
-        # Qualifying results endpoint
         resp = requests.get(
             "https://cf.nascar.com/cacher/2026/qualifying/qualifying_results.json",
             headers=HEADERS,
@@ -265,7 +278,6 @@ def fetch_live_qualifying() -> dict:
         )
         if resp.status_code == 200:
             data = resp.json()
-            # Parse qualifying results
             results = {}
             sessions = data.get("sessions", [data] if not isinstance(data, list) else data)
             for session in (sessions if isinstance(sessions, list) else [sessions]):
@@ -286,7 +298,7 @@ def fetch_live_qualifying() -> dict:
     except Exception:
         pass
 
-    # Fallback: try live-feed endpoint
+    # Fallback: try live-feed endpoint for current race qualifying position
     try:
         resp = requests.get(
             "https://cf.nascar.com/live/feeds/live-feed.json",
@@ -299,13 +311,18 @@ def fetch_live_qualifying() -> dict:
             for v in data.get("vehicles", []):
                 driver = v.get("driver", {})
                 name = driver.get("fullName", driver.get("name", ""))
+                # If driver name is missing, use vehicle number
+                if not name and "vehicle_number" in v:
+                    name = f"#{v['vehicle_number']}"
                 if not name:
                     continue
                 norm_name = _normalize_driver(name)
                 results[norm_name] = {
-                    "position": int(v.get("qualifiedPosition", 0)),
-                    "speed": float(v.get("speed", 0)),
-                    "best_time": float(v.get("bestLapTime", 0)),
+                    "position": int(v.get("starting_position", v.get("running_position", 0))),
+                    "speed": float(v.get("best_lap_speed", 0)),
+                    "best_time": float(v.get("best_lap_time", 0)),
+                    "avg_running_pos": float(v.get("average_running_position", 0)),
+                    "avg_speed": float(v.get("average_speed", 0)),
                 }
             return results
     except Exception:
@@ -317,29 +334,27 @@ def fetch_live_qualifying() -> dict:
 def merge_loop_data_with_standings(loop_df: pd.DataFrame, standings_df: pd.DataFrame) -> pd.DataFrame:
     """Merge Racing-Reference loop data into the existing standings DataFrame.
     
-    Adds columns: driver_rating, avg_running_position, laps_led_loop, fastest_laps
+    Adds columns: driver_rating, avg_running_position, laps_led_loop, fastest_laps,
+    quality_passes, top15_laps, and their rolling averages.
     """
     if loop_df.empty:
         return standings_df
 
     result = standings_df.copy()
 
-    # Create merge keys: normalized driver name + race number
-    standings_key = result["driver_name"].str.lower().str.strip()
-    loop_key = loop_df["driver_norm"]
-
-    # Merge on driver name + race number
-    result = result.reset_index(drop=True)
-    
     # Add loop data columns with NaN defaults
-    for col in ["driver_rating", "avg_running_position", "laps_led_loop", "fastest_laps"]:
+    loop_cols = ["driver_rating", "avg_running_position", "laps_led_loop", "fastest_laps",
+                 "quality_passes", "top15_laps", "pct_quality_passes", "pct_top15_laps",
+                 "passing_differential", "avg_speed_loop"]
+    for col in loop_cols:
         if col not in result.columns:
             result[col] = np.nan
 
     # Manual merge: for each driver-race in standings, find matching loop data
-    for idx, row in result.iterrows():
-        driver_norm = _normalize_driver(row.get("driver_name", ""))
-        race_no = row.get("race_number", 0)
+    matched = 0
+    for idx in result.index:
+        driver_norm = _normalize_driver(result.at[idx, "driver_name"] if "driver_name" in result.columns else "")
+        race_no = result.at[idx, "race_number"] if "race_number" in result.columns else 0
         if not driver_norm or not race_no:
             continue
 
@@ -347,28 +362,129 @@ def merge_loop_data_with_standings(loop_df: pd.DataFrame, standings_df: pd.DataF
         if match.empty:
             continue
 
-        result.at[idx, "driver_rating"] = match.iloc[0].get("driver_rating", np.nan)
-        result.at[idx, "avg_running_position"] = match.iloc[0].get("avg_running_position", np.nan)
-        result.at[idx, "laps_led_loop"] = match.iloc[0].get("laps_led", 0)
-        result.at[idx, "fastest_laps"] = match.iloc[0].get("fastest_laps", 0)
+        row = match.iloc[0]
+        result.at[idx, "driver_rating"] = row.get("driver_rating", np.nan)
+        result.at[idx, "avg_running_position"] = row.get("avg_running_position", np.nan)
+        result.at[idx, "laps_led_loop"] = row.get("laps_led", 0)
+        result.at[idx, "fastest_laps"] = row.get("fastest_laps", 0)
+        result.at[idx, "quality_passes"] = row.get("quality_passes", 0)
+        result.at[idx, "top15_laps"] = row.get("top15_laps", 0)
+        result.at[idx, "pct_quality_passes"] = row.get("pct_quality_passes", 0)
+        result.at[idx, "pct_top15_laps"] = row.get("pct_top15_laps", 0)
+        result.at[idx, "passing_differential"] = row.get("passing_differential", 0)
+        matched += 1
 
-    matched = result["driver_rating"].notna().sum()
     print(f"  Merged loop data: {matched}/{len(result)} rows matched", flush=True)
     return result
 
 
+def compute_rolling_loop_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute rolling averages of loop data features for each driver.
+    
+    Adds feature columns with shift(1) to prevent look-ahead bias.
+    """
+    if df.empty or "driver_rating" not in df.columns:
+        return df
+    
+    result = df.copy()
+    result = result.sort_values(["driver_norm", "race_number"]).reset_index(drop=True)
+    
+    # Rolling driver rating (key feature: r≈0.614)
+    for window in [3, 5, 10]:
+        col = f"roll_driver_rating_{window}"
+        result[col] = (
+            result.groupby("driver_norm")["driver_rating"]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+    
+    # Rolling average running position (smaller = better at that track)
+    for window in [3, 5, 10]:
+        col = f"roll_avg_running_pos_{window}"
+        result[col] = (
+            result.groupby("driver_norm")["avg_running_position"]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+    
+    # Rolling laps led rate
+    for window in [3, 5, 10]:
+        col = f"roll_laps_led_rate_{window}"
+        # laps_led / total_laps capped at 1.0
+        laps_pct = result["laps_led"] / result["total_laps"].replace(0, 1)
+        result[col] = (
+            pd.Series(laps_pct).groupby(result["driver_norm"])
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+    
+    # Rolling top15 laps rate
+    for window in [3, 5, 10]:
+        col = f"roll_top15_rate_{window}"
+        result[col] = (
+            result.groupby("driver_norm")["top15_laps"]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+    
+    # Rolling quality passes
+    for window in [3, 5, 10]:
+        col = f"roll_quality_passes_{window}"
+        result[col] = (
+            result.groupby("driver_norm")["quality_passes"]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+    
+    # Fill NaN with reasonable defaults
+    fill_defaults = {
+        "roll_driver_rating_3": 70.0, "roll_driver_rating_5": 70.0, "roll_driver_rating_10": 70.0,
+        "roll_avg_running_pos_3": 20.0, "roll_avg_running_pos_5": 20.0, "roll_avg_running_pos_10": 20.0,
+    }
+    for col, default in fill_defaults.items():
+        if col in result.columns:
+            result[col] = result[col].fillna(default)
+    
+    # Binary rates default to 0
+    for col in result.columns:
+        if col.startswith("roll_laps_led_rate_") or col.startswith("roll_top15_rate_") or col.startswith("roll_quality_passes_"):
+            result[col] = result[col].fillna(0)
+    
+    return result
+
+
 if __name__ == "__main__":
-    # Test: fetch loop data for 2025
-    df = fetch_loop_data_season(2025)
+    import sys
+    
+    # Fetch loop data for recent seasons
+    years = [2024, 2025]
+    if len(sys.argv) > 1:
+        years = [int(y) for y in sys.argv[1:]]
+    
+    df = fetch_multiyear_loop_data(years)
     if not df.empty:
-        print(f"\n2025 loop data: {len(df)} rows, {df['driver_norm'].nunique()} drivers")
-        print(f"Columns: {list(df.columns)}")
+        print(f"\n=== LOOP DATA SUMMARY ===")
+        print(f"Total rows: {len(df)}")
+        print(f"Seasons: {sorted(df['season'].unique())}")
+        print(f"Races: {df.groupby('season')['race_number'].nunique().to_dict()}")
+        print(f"Drivers: {df['driver_norm'].nunique()}")
         print(f"\nDriver Rating stats:")
         print(f"  Mean: {df['driver_rating'].mean():.1f}")
         print(f"  Std:  {df['driver_rating'].std():.1f}")
         print(f"  Min:  {df['driver_rating'].min():.1f}")
         print(f"  Max:  {df['driver_rating'].max():.1f}")
-        print(f"\nTop drivers by avg rating:")
+        print(f"\nAvg Running Position stats:")
+        print(f"  Mean: {df['avg_running_position'].mean():.1f}")
+        print(f"  Std:  {df['avg_running_position'].std():.1f}")
+        print(f"\nTop drivers by avg Driver Rating:")
         top = df.groupby("driver_name")["driver_rating"].mean().sort_values(ascending=False).head(10)
         for name, rating in top.items():
             print(f"  {name:30s} {rating:.1f}")
+        
+        # Compute rolling features and show
+        print(f"\nComputing rolling loop data features...")
+        roll_df = compute_rolling_loop_features(df)
+        feat_cols = [c for c in roll_df.columns if c.startswith("roll_")]
+        print(f"  Created {len(feat_cols)} rolling features: {feat_cols}")
+        
+        # Cache the full dataset with features
+        out_file = CACHE_DIR / "loop_data_with_features.parquet"
+        roll_df.to_parquet(out_file, index=False)
+        print(f"  Saved to {out_file}")
+    else:
+        print("No loop data found")

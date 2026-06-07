@@ -318,13 +318,23 @@ def train_pa_model(pa_df: pd.DataFrame) -> dict:
 
     print(f"\n  Train: {len(X_train)}, Test: {len(X_test)}")
 
-    # Class weights (inverse frequency)
+    # Class weights: inverse sqrt frequency capped at 10.0
+    # This gives rare events (3B=0.4%, HBP=1.1%) more importance
+    # without completely overwhelming the model
     class_counts = np.bincount(y_train, minlength=8)
-    class_weights = {i: float(len(y_train) / (8 * max(c, 1))) for i, c in enumerate(class_counts)}
-    print(f"  Class weights: {class_weights}")
+    total = len(y_train)
+    n_classes = 8
+    sample_weights = np.ones(len(y_train), dtype=float)
+    for i in range(n_classes):
+        # Inverse sqrt weighting: sqrt(total / (n_classes * count))
+        weight = float(np.sqrt(total / (n_classes * max(class_counts[i], 1))))
+        weight = min(weight, 10.0)  # Cap at 10x to prevent overfitting to rare events
+        mask = y_train == i
+        sample_weights[mask] = weight
+        print(f"  {OUTCOME_NAMES[i]:4s}: count={class_counts[i]:6d} weight={weight:.2f}")
 
-    # LightGBM dataset
-    train_data = lgb.Dataset(X_train, label=y_train)
+    # LightGBM dataset with per-sample weights
+    train_data = lgb.Dataset(X_train, label=y_train, weight=sample_weights)
     test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
 
     params = {
@@ -333,11 +343,12 @@ def train_pa_model(pa_df: pd.DataFrame) -> dict:
         "metric": "multi_logloss",
         "boosting_type": "gbdt",
         "num_leaves": 63,
-        "learning_rate": 0.05,
+        "learning_rate": 0.08,
         "feature_fraction": 0.7,
         "bagging_fraction": 0.8,
         "bagging_freq": 5,
-        "min_child_samples": 50,
+        "min_child_samples": 10,
+        "min_child_weight": 5.0,
         "reg_alpha": 0.5,
         "reg_lambda": 1.0,
         "verbose": -1,

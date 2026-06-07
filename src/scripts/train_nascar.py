@@ -11,7 +11,7 @@ from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 
-from src.data.nascar import NASCARDataSource
+from src.data.nascar import NASCARDataSource    from src.data.nascar_loop import fetch_multiyear_loop_data, _normalize_driver
 from src.features.nascar import NASCARFeatureEngineer
 
 MODEL_DIR = Path("models/nascar")
@@ -28,6 +28,16 @@ FEATURES = [
     "team_avg_finish", "manufacturer_avg_finish",
     "race_number", "season_experience",
     "avg_start_pos_5", "avg_start_pos_10", "avg_start_pos_20",
+    "avg_starting_position_5", "avg_starting_position_10", "avg_starting_position_20",
+    # Loop data features
+    "roll_driver_rating_3", "roll_driver_rating_5", "roll_driver_rating_10",
+    "roll_avg_running_pos_3", "roll_avg_running_pos_5", "roll_avg_running_pos_10",
+    "roll_laps_led_rate_3", "roll_laps_led_rate_5", "roll_laps_led_rate_10",
+    "roll_top15_laps_3", "roll_top15_laps_5", "roll_top15_laps_10",
+    "roll_quality_passes_3", "roll_quality_passes_5", "roll_quality_passes_10",
+    "roll_pass_diff_3", "roll_pass_diff_5", "roll_pass_diff_10",
+    "roll_pct_quality_passes_3", "roll_pct_quality_passes_5", "roll_pct_quality_passes_10",
+    "roll_pct_top15_laps_3", "roll_pct_top15_laps_5", "roll_pct_top15_laps_10",
 ]
 
 
@@ -121,6 +131,36 @@ def main():
         print("No data")
         return
     print(f"  {len(df)} driver-race rows, {df['driver_name'].nunique()} drivers")
+    
+    # Merge loop data from Racing-Reference (driver rating, avg running position, etc.)
+    print(f"\n  Merging loop data from Racing-Reference...")
+    loop_years = [2020, 2021, 2022, 2023, 2024, 2025]
+    loop_df = fetch_multiyear_loop_data(loop_years)
+    if not loop_df.empty:
+        # Normalize driver names for merge (use same function as scraper)
+        df["driver_norm"] = df["driver_name"].apply(_normalize_driver)
+        df["race_number"] = df["race_number"].astype(int)
+        df["season"] = df["season"].astype(str)
+        loop_merge = loop_df[["driver_norm", "race_number", "season",
+                              "driver_rating", "avg_running_position", "laps_led",
+                              "total_laps", "quality_passes", "top15_laps",
+                              "passing_differential", "pct_quality_passes",
+                              "pct_top15_laps", "fastest_laps",
+                              "start_position", "finish_position"]].copy()
+        loop_merge["race_number"] = loop_merge["race_number"].astype(int)
+        loop_merge["season"] = loop_merge["season"].astype(str)
+        before = len(df)
+        df = df.merge(loop_merge, on=["driver_norm", "race_number", "season"], how="left",
+                      suffixes=("", "_loop"))
+        matched = df["driver_rating"].notna().sum()
+        print(f"    Matched {matched}/{before} driver-race rows with loop data ({matched/before:.1%})")
+        # Drop loop suffix columns and driver_norm
+        for c in df.columns:
+            if c.endswith("_loop"):
+                df.drop(columns=[c], inplace=True)
+        df.drop(columns=["driver_norm"], inplace=True, errors="ignore")
+    else:
+        print(f"    No loop data available — models will train without driver rating features")
 
     from types import SimpleNamespace
     cfg = SimpleNamespace(rolling_windows=[3, 5, 10], recency_decay=0.003)
