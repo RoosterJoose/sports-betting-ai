@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Daily Top Plays - scans Kalshi for the best bets today.
 
-Only uses market types with non-info_only (R² > 0.04) models:
-  - KS (strikeouts): SO model, pitcher props
-
-TB, HR, HRR are info_only (R² < 0.04) - their edges are noise.
-They are excluded from parlays.
+WARNING: ALL MLB player prop models (KS, HR, TB, HRR) failed backtest.
+All are worse than the naive baseline (predicting the prior).
+info_only=True means scan but don't bet — edges are noise.
 """
 import sys, re, warnings
 warnings.filterwarnings("ignore")
@@ -27,82 +25,18 @@ def main():
     print(f"  Balance: ${balance:.2f}  |  Min edge: {min_edge:.0%}")
     print("=" * 70)
 
-    # === 1. MLB Strikeouts (only non-info_only market) ===
+    # All MLB prop models failed backtest — short circuit
     print()
     print("  " + "-" * 66)
-    print("  1. MLB STRIKEOUT PROPS - KS (model: R² > 0.04)")
+    print("  1. MLB PLAYER PROPS — all models info_only (backtest: worse than naive)")
     print("  " + "-" * 66)
+    print("  All MLB prop models failed backtest (worse than naive baseline).")
+    print("  info_only=True — no bets will be placed on these models.")
 
-    latest = load_features()
-    if latest is None or latest.empty:
-        print("  No feature data. Run training first.")
-        return
-    print(f"  Loaded {len(latest)} players")
-
-    ks_mkts = kc.list_markets(series_ticker="KXMLBKS", limit=200)
-    if ks_mkts is None or ks_mkts.empty:
-        print("  No KS markets found")
-        return
-
-    today = datetime.now().strftime("%y%b%d").upper()
-    ks_mkts = ks_mkts[ks_mkts["ticker"].str.contains(today, regex=False, na=False)]
-    print(f"  {len(ks_mkts)} KS markets for today")
-
-    for mt in MARKET_TYPES:
-        if mt["series_ticker"] != "KXMLBKS":
-            continue
-        m, s = _load_regressor(mt["model_name"])
-        if m is None:
-            continue
-
-        for _, row in ks_mkts.iterrows():
-            try:
-                ticker = row["ticker"]
-                title = row.get("title", "")
-                yb = float(row.get("yes_bid_dollars", 0) or 0)
-                ya = float(row.get("yes_ask_dollars", 1) or 1)
-                if yb <= 0 and ya >= 1.0:
-                    continue
-                yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
-
-                lm = re.match(mt["pattern"], title, re.IGNORECASE)
-                if not lm:
-                    continue
-                pname = lm.group(1).strip()
-                line_val = int(lm.group(2))
-
-                prow = _match_player(pname, latest, position_filter=mt["position"])
-                if prow is None:
-                    continue
-
-                p_yes, mu = _p_ge_line(prow, m, s, line_val)
-                yes_edge = p_yes - yes_mid
-
-                if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
-                    all_bets.append({
-                        "type": "KS",
-                        "ticker": ticker,
-                        "title": title,
-                        "player": pname,
-                        "side": "yes",
-                        "price_cents": max(1, int(yes_mid * 100)),
-                        "model_prob": round(p_yes, 4),
-                        "market_prob": round(yes_mid, 4),
-                        "edge": round(yes_edge, 4),
-                        "label": f"KS-{pname[:20]} {line_val}+ Ks",
-                    })
-            except Exception:
-                pass
-
-    ks_count = len([b for b in all_bets if b["type"] == "KS"])
-    print(f"  -> {ks_count} qualifying KS bets")
-    for b in sorted(all_bets, key=lambda x: -x["edge"])[:5]:
-        print(f"  {b['label'][:50]:50s} edge={b['edge']:.0%} mkt={b['market_prob']:.0%} @ {b['price_cents']}c")
-
-    # === 2. Multi-Leg Parlays (KS only) ===
+    # === 2. Multi-Leg Parlays (all info_only) ===
     print()
     print("  " + "-" * 66)
-    print("  2. MULTI-LEG PARLAYS (KS only - info_only markets excluded)")
+    print("  2. MULTI-LEG PARLAYS — all models info_only")
     print("  " + "-" * 66)
 
     parlay_opps = []

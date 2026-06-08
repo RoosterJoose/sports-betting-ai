@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Unified Kalshi MLB bettor — covers ALL MLB market types.
+"""Unified Kalshi MLB bettor — covers all available MLB market types.
 
 Scans Kalshi for MLB markets across every stat type Kalshi offers,
 loads the corresponding regressor, computes edge with Wang calibration,
 and places limit orders where edge >= 7%.
 
 Market types:
-  KXMLBKS → strikeouts   (SO,  pitcher)
-  KXMLBHR → home runs    (HR,  hitter)
-  KXMLBTB → total bases  (TB,  hitter)
-  KXMLBHRR → HRR         (HRR, hitter)
+  KXMLBKS → strikeouts          (SO,  pitcher)
+  KXMLBHR → home runs           (HR,  hitter)
+  KXMLBTB → total bases         (TB,  hitter)
+  KXMLBHRR → H+R+RBI            (HRR, hitter)
+  KXMLBIP → pitching outs       (IP,  pitcher) — no active markets yet
+  KXMLBER → earned runs allowed  (ER,  pitcher) — no active markets yet
+  KXMLBH → hits allowed          (H,   pitcher) — no active markets yet
+  KXMLBBB → walks allowed        (BB,  pitcher) — no active markets yet
+  KXMLBR → runs                  (R,   hitter)  — no active markets yet
+  KXMLBRBI → RBIs                (RBI, hitter)  — no active markets yet
+  KXMLBSB → stolen bases         (SB,  hitter)  — no active markets yet
 
 Usage:
     python -m src.scripts.kalshi_mlb_unified --scan
@@ -52,7 +59,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*strikeouts?\??$",
         "desc": "strikeouts",
-        "info_only": False,
+        "info_only": True,
     },
     {
         "name": "HR",
@@ -61,7 +68,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*home\s*runs?\??$",
         "desc": "home runs",
-        "info_only": False,
+        "info_only": True,
     },
     {
         "name": "TB",
@@ -70,7 +77,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*total\s*bases?\??$",
         "desc": "total bases",
-        "info_only": False,
+        "info_only": True,
     },
     {
         "name": "HRR",
@@ -79,7 +86,78 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits\s*\+\s*runs\s*\+\s*RBIs?\??$",
         "desc": "hits+runs+RBIs",
-        "info_only": False,
+        "info_only": True,
+    },
+    # New market types (no active markets as of June 2026 — patterns inferred)
+    {
+        "name": "IP",
+        "model_name": "IP",
+        "series_ticker": "KXMLBIP",
+        "position": "pitcher",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*outs?\??$",
+        "desc": "pitching outs",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "ER",
+        "model_name": "ER",
+        "series_ticker": "KXMLBER",
+        "position": "pitcher",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*earned\s*runs?\??$",
+        "desc": "earned runs allowed",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "H",
+        "model_name": "H",
+        "series_ticker": "KXMLBH",
+        "position": "pitcher",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*hits?\??$",
+        "desc": "hits allowed",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "BB",
+        "model_name": "BB",
+        "series_ticker": "KXMLBBB",
+        "position": "pitcher",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*walks?\??$",
+        "desc": "walks allowed",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "R",
+        "model_name": "R",
+        "series_ticker": "KXMLBR",
+        "position": "hitter",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*runs?\??$",
+        "desc": "runs",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "RBI",
+        "model_name": "RBI",
+        "series_ticker": "KXMLBRBI",
+        "position": "hitter",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*RBIs?\??$",
+        "desc": "RBIs",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
+    },
+    {
+        "name": "SB",
+        "model_name": "SB",
+        "series_ticker": "KXMLBSB",
+        "position": "hitter",
+        "pattern": r"^(.+?):\s*(\d+)\+?\s*stolen\s*bases?\??$",
+        "desc": "stolen bases",
+        "info_only": True,
+        "pattern_note": "unverified — update when Kalshi lists these markets",
     },
 ]
 
@@ -294,7 +372,7 @@ def main():
         pattern = mt["pattern"]
         desc = mt["desc"]
 
-        info_only = mt.get("info_only", False)
+        info_only = mt.get("info_only", True)
 
         if model_name not in model_cache:
             m, s = _load_regressor(model_name)
@@ -395,6 +473,10 @@ def main():
 
     print(f"\nTotal matched opportunities: {len(all_opps)}")
     if all_opps:
+        info_only_count = sum(1 for o in all_opps if o.get("info_only", True))
+        if info_only_count == len(all_opps):
+            print(f"  ⚠ ALL models are info_only (failed backtest — worse than naive baseline)")
+            print(f"  ⚠ Edges shown below are NOISE — do not bet on them.")
         print(f"\nTop 10 overall:")
         print(f"  {'Type':4s} {'Player':25s} {'Stat':20s} {'Line':>5s} {'P(Y)':>5s} {'Mkt':>5s} {'Edge(Y)':>7s} {'2026':>6s} {'Note':>10s}")
         print(f"  " + "-" * 90)
@@ -411,54 +493,56 @@ def main():
     daily_loss_limit = 0.10  # 10% max daily loss
 
     if args.bet:
-        print(f"\n--- PLACING YES ORDERS (buy when market underprices — model+recency > mkt) ---")
-        placed = 0
-        daily_pnl = 0.0
-        ks_ticker = "KXMLBKS"
-        for o in all_opps:
-            if placed >= 6:
-                break
-            # Skip info-only markets (HR/TB/HRR have R²<0.04)
-            if o.get("info_only", False):
-                continue
-            # Skip in-progress games (model uses pre-game data)
-            if not _game_is_pregame(o.get("ticker", "")):
-                continue
-            # Circuit breaker: stop if daily loss > 10%
-            if daily_pnl <= -starting_balance * daily_loss_limit:
-                print(f"  DAILY LOSS LIMIT HIT (-${abs(daily_pnl):.2f}), stopping")
-                break
+        # Filter out info_only markets before placing bets
+        bet_opps = [o for o in all_opps if not o.get("info_only", True)]
+        if not bet_opps:
+            print("\n  No non-info_only opportunities to bet on.")
+        else:
+            print(f"\n--- PLACING YES ORDERS ({len(bet_opps)} candidates after info_only filter) ---")
+            placed = 0
+            daily_pnl = 0.0
+            ks_ticker = "KXMLBKS"
+            for o in bet_opps:
+                if placed >= 6:
+                    break
+                # Skip info-only markets (ALL models failed backtest)
+                if o.get("info_only", False):
+                    continue
+                # Skip in-progress games (model uses pre-game data)
+                if not _game_is_pregame(o.get("ticker", "")):
+                    continue
+                # Circuit breaker: stop if daily loss > 10%
+                if daily_pnl <= -starting_balance * daily_loss_limit:
+                    print(f"  DAILY LOSS LIMIT HIT (-${abs(daily_pnl):.2f}), stopping")
+                    break
 
-            yes_edge = o["yes_edge"]
-            no_edge = o["no_edge"]
-            mkt_y = o["mkt_yes"]
-            p_y = o["p_yes"]
+                yes_edge = o["yes_edge"]
+                no_edge = o["no_edge"]
+                mkt_y = o["mkt_yes"]
+                p_y = o["p_yes"]
 
-            # Only buy YES when model says market is underpricing (model > market)
-            # Public overreacts to names — real edge is on undervalued pitchers
-            # Research: 5% edge is breakeven threshold, target 1.50-2.50 decimal (40-67¢) range
-            if yes_edge > 0.05 and 0.15 < mkt_y < 0.75:
-                bid = min(98, int(mkt_y * 100) + 1)
-                side = "yes"
-                direction = "BUY YES"
-            else:
-                continue
+                if yes_edge > 0.05 and 0.15 < mkt_y < 0.75:
+                    bid = min(98, int(mkt_y * 100) + 1)
+                    side = "yes"
+                    direction = "BUY YES"
+                else:
+                    continue
 
-            b = client.get_balance()
-            cost_per = ((100 - bid) / 100) if side == "no" else (bid / 100)
-            target_risk = b * 0.05  # 5% of current balance
-            count = int(target_risk / cost_per)
-            if count < 1:
-                print(f"  SKIP {o['player']}: can't risk <5% (1 contract = ${cost_per:.2f} > ${target_risk:.2f} limit)")
-                continue
-            try:
-                client.create_order(ticker=o["ticker"], side=side, yes_price=bid, count=str(count))
-                daily_pnl -= cost_per * count
-                print(f"  {direction:8s} {o['type']:4s} {o['player'][:25]:25s} {o['stat'][:15]:15s} {o['line']}+ @ {bid}¢ x{count} "
-                      f"(model={p_y:.0%} mkt={mkt_y:.0%} risk=${cost_per*count:.2f})", flush=True)
-                placed += 1
-            except Exception as e:
-                print(f"  FAILED {o['player']}: {e}", flush=True)
+                b = client.get_balance()
+                cost_per = ((100 - bid) / 100) if side == "no" else (bid / 100)
+                target_risk = b * 0.05
+                count = int(target_risk / cost_per)
+                if count < 1:
+                    print(f"  SKIP {o['player']}: can't risk <5% (1 contract = ${cost_per:.2f} > ${target_risk:.2f} limit)")
+                    continue
+                try:
+                    client.create_order(ticker=o["ticker"], side=side, yes_price=bid, count=str(count))
+                    daily_pnl -= cost_per * count
+                    print(f"  {direction:8s} {o['type']:4s} {o['player'][:25]:25s} {o['stat'][:15]:15s} {o['line']}+ @ {bid}¢ x{count} "
+                          f"(model={p_y:.0%} mkt={mkt_y:.0%} risk=${cost_per*count:.2f})", flush=True)
+                    placed += 1
+                except Exception as e:
+                    print(f"  FAILED {o['player']}: {e}", flush=True)
         print(f"  Placed {placed} | Balance: ${client.get_balance():.2f}")
 
     print(f"\nDone at {datetime.now().strftime('%H:%M:%S')}")

@@ -135,12 +135,14 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  1. MLB PLAYER PROPS (KS/strikeouts, HR, TB, HRR)")
     print("  " + "-" * 66)
     try:
-        from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line
+        from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line, _recency_check
         latest = load_features()
         if latest is not None and not latest.empty:
             print(f"  Loaded {len(latest)} players")
             today = datetime.now().strftime("%y%b%d").upper()
             for mt in MARKET_TYPES:
+                if mt.get("info_only", True):
+                    continue
                 mname = mt["name"]
                 series = mt["series_ticker"]
                 pattern = mt["pattern"]
@@ -179,7 +181,13 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                         prow = _match_player(pname, latest, position_filter=pos)
                         if prow is None:
                             continue
-                        p_yes, mu = _p_ge_line(prow, m, s, line_val)
+                        # Use empirical calibration (pass stat_name for calibration lookup)
+                        stat_col = model_name.lower()
+                        p_yes, mu = _p_ge_line(prow, m, s, line_val, stat_name=model_name)
+                        # Cross-reference with actual 2026 rate (more conservative for YES edge)
+                        recency_rate, _, _ = _recency_check(pname, line_val, stat_col=stat_col)
+                        if recency_rate >= 0:
+                            p_yes = max(p_yes, recency_rate)  # use higher = more conservative for YES
                         yes_edge = p_yes - yes_mid
                         if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
                             _, team = get_team_from_ticker(ticker)
@@ -201,11 +209,14 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                             count += 1
                     except Exception:
                         pass
-                print(f"  {mname:5s} ({series:10s}): {count} qualifying bets")
+                print(f"  {mname:5s} ({series:10s}): {count} qualifying bets (info_only markets excluded)")
         else:
             print("  No feature data available")
     except Exception as e:
         print(f"  MLB props error: {e}")
+    # Add message if no MLB markets were active (all info_only)
+    if all(mt.get("info_only", True) for mt in MARKET_TYPES):
+        print("  (All MLB models failed backtest — no bets from model-based player props)")
 
     # === 2. MLB F5 (First 5 Innings - Team Win) ===
     print()
@@ -243,37 +254,33 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  F5 error: {e}")
 
-    # === 3. World Cup (starts June 11) ===
+    # === 3. World Cup 2026 ===
     print()
     print("  " + "-" * 66)
     print("  3. WORLD CUP 2026")
     print("  " + "-" * 66)
-    wc_start = datetime(2026, 6, 11)
-    days_until_wc = (wc_start - datetime.now()).days
-    if days_until_wc <= 0:
-        print("  World Cup is live! Running scan...")
-        try:
-            from src.scripts.scan_wc import scan as wc_scan
-            wc_bets = wc_scan()
-            if wc_bets:
-                for q in wc_bets:
-                    all_bets.append({
-                        "type": "WC", "ticker": q["ticker"],
-                        "side": "yes",
-                        "price_cents": max(1, int(q["ya"] * 100)),
-                        "market_prob": q["mkt_p"], "model_prob": q["model_p"],
-                        "edge": q["edge_pct"] / 100.0,
-                        "contracts": q.get("contracts", 1),
-                        "player": q.get("match", "?"),
-                        "team": q.get("pick", "?"),
-                        "line_val": 0,
-                        "label": f"WC-{q.get('match','?')} {q.get('pick','?')}",
-                    })
-                print(f"  -> {len(wc_bets)} WC bets")
-        except Exception as e:
-            print(f"  World Cup error: {e}")
-    else:
-        print(f"  World Cup starts in {days_until_wc} days ({wc_start.date()})")
+    try:
+        from src.scripts.scan_wc import scan as wc_scan
+        wc_bets = wc_scan()
+        if wc_bets:
+            for q in wc_bets:
+                all_bets.append({
+                    "type": "WC", "ticker": q["ticker"],
+                    "side": "yes",
+                    "price_cents": max(1, int(q["ya"] * 100)),
+                    "market_prob": q["mkt_p"], "model_prob": q["model_p"],
+                    "edge": q["edge_pct"] / 100.0,
+                    "contracts": q.get("contracts", 1),
+                    "player": q.get("match", "?"),
+                    "team": q.get("pick", "?"),
+                    "line_val": 0,
+                    "label": f"WC-{q.get('match','?')} {q.get('pick','?')}",
+                })
+            print(f"  -> {len(wc_bets)} WC bets")
+        else:
+            print("  No qualifying WC bets found")
+    except Exception as e:
+        print(f"  World Cup error: {e}")
 
     # === 4. Safe Compounder ===
     print()
@@ -313,8 +320,8 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     parlay_opps = []
     for b in all_bets:
         bt = b["type"]
-        # Include MLB player props + F5; exclude COMP (safe compounder is a different strategy)
-        if bt not in ("KS", "HR", "TB", "HRR", "F5"):
+        # Include MLB player props + F5 + WC; exclude COMP (safe compounder is a different strategy)
+        if bt not in ("KS", "HR", "TB", "HRR", "F5", "WC"):
             continue
         if b.get("price_cents", 50) < 1 or b.get("price_cents", 50) > 99:
             continue

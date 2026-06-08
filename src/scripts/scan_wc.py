@@ -9,10 +9,41 @@ from datetime import datetime, timedelta
 from src.data.kalshi import KalshiClient
 from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_teams,
                                   get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO)
+from src.models.calibrator import EmpiricalCalibrator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = PROJECT_ROOT / "models" / "worldcup"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+# Trained ML model cache
+_loaded_model = None
+_loaded_meta = None
+_calibrator = None
+
+def _load_match_model():
+    """Load trained match outcome model. Returns (model, meta) or (None, None)."""
+    global _loaded_model, _loaded_meta, _calibrator
+    if _loaded_model is not None:
+        return _loaded_model, _loaded_meta
+    
+    model_path = MODEL_DIR / "wc_match_outcome.txt"
+    meta_path = MODEL_DIR / "wc_match_outcome.meta.json"
+    cal_path = MODEL_DIR / "calibration"
+    
+    if not model_path.exists() or not meta_path.exists():
+        return None, None
+    
+    try:
+        import lightgbm as lgb
+        _loaded_model = lgb.Booster(model_file=str(model_path))
+        with open(meta_path) as f:
+            _loaded_meta = json.load(f)
+        if cal_path.exists():
+            _calibrator = EmpiricalCalibrator(cal_path)
+        return _loaded_model, _loaded_meta
+    except Exception:
+        return None, None
+
 
     # Team name normalization for Kalshi tickers
 TICKER_TEAM_MAP = {
@@ -67,23 +98,120 @@ def shin_devig(prices_3way):
     return out / out.sum()
 
 
-def predict_match(home_team, away_team, elo_ratings):
+# Build form features from historical ELO data for ML model input
+_team_form_cache = None
+
+def _build_form_features(elo_df, elo_ratings):
+    """Build recent form features for all teams from ELO data.
+    Returns dict: team -> {wr, dr, gs, gc, n}
+    """
+    global _team_form_cache
+    if _team_form_cache is not None:
+        return _team_form_cache
+    
+    form = {}
+    for team, elo in elo_ratings.items():
+        # Get recent matches involving this team
+        team_matches = elo_df[(elo_df["home_team"] == team) | (elo_df["away_team"] == team)]
+        team_matches = team_matches.sort_values("match_date").tail(10)
+        
+        if team_matches.empty:
+            form[team] = {"wr": 0.0, "dr": 0.0, "gs": 0.0, "gc": 0.0, "n": 0}
+            continue
+        
+        wins, draws, gs, gc = 0, 0, 0, 0
+        for _, r in team_matches.iterrows():
+            is_home = r["home_team"] == team
+            home_score = int(r["home_score"])
+            away_score = int(r["away_score"])
+            if is_home:
+                gs += home_score
+                gc += away_score
+                if home_score > away_score:
+                    wins += 1
+                elif home_score == away_score:
+                    draws += 1
+            else:
+                gs += away_score
+                gc += home_score
+                if away_score > home_score:
+                    wins += 1
+                elif away_score == home_score:
+                    draws += 1
+        
+        n = len(team_matches)
+        form[team] = {
+            "wr": wins / n,
+            "dr": draws / n,
+            "gs": gs / n,
+            "gc": gc / n,
+            "n": n,
+        }
+    
+    _team_form_cache = form
+    return form
+
+
+def predict_match(home_team, away_team, elo_ratings, form_features=None):
+    """Predict match outcome using trained ML model, falling back to Elo formula.
+    Returns array of [p_home, p_draw, p_away].
+    """
     elo_h = elo_ratings.get(home_team, CONF_ELO.get(CONF_MAP.get(home_team, ""), 1500))
     elo_a = elo_ratings.get(away_team, CONF_ELO.get(CONF_MAP.get(away_team, ""), 1500))
-
+    
+    # Try trained ML model first
+    model, meta = _load_match_model()
+    if model is not None and meta is not None and form_features is not None:
+        try:
+            hf = form_features.get(home_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
+            af = form_features.get(away_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
+            
+            # Build feature vector matching training features
+            features = meta.get("features", [])
+            vec = {}
+            for c in features:
+                if c == "elo_home":
+                    vec[c] = elo_h
+                elif c == "elo_away":
+                    vec[c] = elo_a
+                elif c == "elo_diff":
+                    vec[c] = elo_h - elo_a
+                elif c in ("h_wr", "h_dr", "h_gs", "h_gc", "h_n"):
+                    key = c[2:]  # strip 'h_' prefix
+                    vec[c] = hf.get(key, 0)
+                elif c in ("a_wr", "a_dr", "a_gs", "a_gc", "a_n"):
+                    key = c[2:]  # strip 'a_' prefix
+                    vec[c] = af.get(key, 0)
+                else:
+                    vec[c] = 0
+            
+            x = np.array([vec.get(c, 0) for c in features]).reshape(1, -1).astype(float)
+            probs = model.predict(x)[0]
+            
+            # Apply empirical calibration if available
+            if _calibrator is not None:
+                for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
+                    cal_p = _calibrator.calibrate(cls_name, 0, probs[cls_idx])
+                    if cal_p != probs[cls_idx]:
+                        probs[cls_idx] = cal_p
+            
+            # Renormalize to sum to 1
+            probs = probs / probs.sum()
+            return probs
+        except Exception:
+            pass  # Fall through to Elo formula
+    
+    # Fallback: Elo-based formula
     eh = elo_expected(elo_h, elo_a)
     ea = 1.0 - eh
-
-    # Draw probability: function of Elo difference
+    
     diff = abs(elo_h - elo_a)
-    # World Cup historical: ~28% for equal teams, decreasing to ~12% for huge gaps
-    # (Real WC draw rate is ~23-25%, lower than club competition due to higher stakes)
     draw_prob = max(0.12, 0.28 - diff * 0.0004)
-
+    
     p_draw = draw_prob
     p_home = eh * (1 - draw_prob)
     p_away = ea * (1 - draw_prob)
-
+    
     return np.array([p_home, p_draw, p_away])
 
 
@@ -158,6 +286,17 @@ def scan(args=None):
     for t, e in sorted(elo_ratings.items(), key=lambda x: -x[1])[:10]:
         print(f"    {t:20s} {e:.0f}")
 
+    # Load ML model if available (for display)
+    wc_model, wc_meta = _load_match_model()
+    if wc_model is not None:
+        print(f"  Trained ML match model loaded ({wc_meta.get('n_features', '?')} features, "
+              f"Brier={wc_meta.get('test_brier', '?'):.4f})")
+    else:
+        print(f"  No trained ML model — using Elo formula")
+    
+    # Build form features for ML model
+    form_features = _build_form_features(elo_df, elo_ratings)
+
     # Get WC markets
     wc_mkts = get_wc_markets(kc)
     print(f"\n  KXWCGAME markets found: {len(wc_mkts)}")
@@ -209,7 +348,7 @@ def scan(args=None):
         if home not in known_elo_teams or away not in known_elo_teams:
             continue
 
-        model_probs = predict_match(home, away, elo_ratings)
+        model_probs = predict_match(home, away, elo_ratings, form_features)
         mkt_probs = np.array([m["home_mid"], m["tie_mid"], m["away_mid"]])
         fair_probs = shin_devig(mkt_probs)
 
@@ -291,7 +430,7 @@ def scan(args=None):
         home = m["home_team"]
         away = m["away_team"]
         mkt_probs = np.array([m.get("home_mid", 0), m.get("tie_mid", 0), m.get("away_mid", 0)])
-        model_probs = predict_match(home, away, elo_ratings)
+        model_probs = predict_match(home, away, elo_ratings, form_features)
 
         date_str = m.get("match_date", "TBD")
         print(f"\n  {home:20s} vs {away:20s}  [{date_str}]")

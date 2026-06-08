@@ -1,3 +1,5 @@
+.venv/
+
 # Secrets
 .env
 kalshi-key.pem

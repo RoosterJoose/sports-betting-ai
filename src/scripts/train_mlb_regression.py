@@ -247,9 +247,25 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="pitcher", compute_
     # Save model
     model.booster_.save_model(str(MODEL_DIR / f"lgb_{stat_name.lower()}.txt"))
 
-    # Save calibration bins
-    cal_path = CALIB_DIR / f"lgb_{stat_name.lower()}.calibration.json"
-    with open(cal_path, "w") as f:
+    # Save calibration bins (EmpiricalCalibrator format)
+    # Format: {line: {"bins": [{"p_pred_min": 0, "p_pred_max": 1.0, "p_actual": Y, "n": N}]}}
+    cal_data = {}
+    for entry in cal_bins:
+        line = str(entry["line"])
+        cal_data[line] = {
+            "bins": [{
+                "p_pred_min": 0.0,
+                "p_pred_max": 1.0,
+                "p_actual": entry["p_actual"],
+                "n": entry["n"],
+            }]
+        }
+    cal_path_empirical = CALIB_DIR / f"{stat_name.lower()}_empirical.json"
+    with open(cal_path_empirical, "w") as f:
+        json.dump(cal_data, f, indent=2)
+    # Also keep old format for reference
+    cal_path_legacy = CALIB_DIR / f"lgb_{stat_name.lower()}.calibration.json"
+    with open(cal_path_legacy, "w") as f:
         json.dump(cal_bins, f, indent=2)
 
     # Save metadata
