@@ -129,69 +129,83 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
 
     all_bets = []
 
-    # === 1. MLB KS (Strikeouts) ===
+    # === 1. MLB PLAYER PROPS (KS = strikeouts, HR = home runs, TB = total bases, HRR = H+R+RBI) ===
     print()
     print("  " + "-" * 66)
-    print("  1. MLB STRIKEOUT PROPS (KS) - RELIABLE MODEL")
+    print("  1. MLB PLAYER PROPS (KS/strikeouts, HR, TB, HRR)")
     print("  " + "-" * 66)
     try:
         from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line
         latest = load_features()
         if latest is not None and not latest.empty:
             print(f"  Loaded {len(latest)} players")
-            ks_mkts = kc.list_markets(series_ticker="KXMLBKS", limit=200)
-            if ks_mkts is not None and not ks_mkts.empty:
-                today = datetime.now().strftime("%y%b%d").upper()
-                ks_mkts = ks_mkts[ks_mkts["ticker"].str.contains(today, regex=False, na=False)]
-                print(f"  {len(ks_mkts)} markets for today")
-                for mt in MARKET_TYPES:
-                    if mt["series_ticker"] != "KXMLBKS" or mt.get("info_only", False):
+            today = datetime.now().strftime("%y%b%d").upper()
+            for mt in MARKET_TYPES:
+                mname = mt["name"]
+                series = mt["series_ticker"]
+                pattern = mt["pattern"]
+                pos = mt["position"]
+                model_name = mt["model_name"]
+                desc = mt["desc"]
+                try:
+                    mkts = kc.list_markets(series_ticker=series, limit=500)
+                    if mkts is None or mkts.empty:
                         continue
-                    m, s = _load_regressor(mt["model_name"])
-                    if m is None:
+                    mkts = mkts[mkts["ticker"].str.contains(today, regex=False, na=False)]
+                    if mkts.empty:
                         continue
-                    for _, row in ks_mkts.iterrows():
-                        try:
-                            ticker = row["ticker"]
-                            title = row.get("title", "")
-                            yb_v = row.get("yes_bid_dollars", 0)
-                            ya_v = row.get("yes_ask_dollars", 1)
-                            yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
-                            ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
-                            if yb <= 0 and ya >= 1.0:
-                                continue
-                            yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
-                            lm = re.match(mt["pattern"], title, re.IGNORECASE)
-                            if not lm:
-                                continue
-                            pname = lm.group(1).strip()
-                            line_val = int(lm.group(2))
-                            prow = _match_player(pname, latest, position_filter=mt["position"])
-                            if prow is None:
-                                continue
-                            p_yes, mu = _p_ge_line(prow, m, s, line_val)
-                            yes_edge = p_yes - yes_mid
-                            if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
-                                _, team = get_team_from_ticker(ticker)
-                                all_bets.append({
-                                    "type": "KS", "ticker": ticker,
-                                    "side": "yes",
-                                    "price_cents": max(1, int(yes_mid * 100)),
-                                    "model_prob": round(p_yes, 4),
-                                    "market_prob": round(yes_mid, 4),
-                                    "edge": round(yes_edge, 4),
-                                    "contracts": 1,
-                                    "player": pname,
-                                    "team": team,
-                                    "line_val": line_val,
-                                    "label": f"{pname} ({team}) {line_val}+ Ks",
-                                })
-                        except Exception:
-                            pass
-                ks_bets = [b for b in all_bets if b["type"] == "KS"]
-                print(f"  -> {len(ks_bets)} qualifying KS bets")
+                except Exception:
+                    continue
+                m, s = _load_regressor(model_name)
+                if m is None:
+                    continue
+                count = 0
+                for _, row in mkts.iterrows():
+                    try:
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0:
+                            continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+                        lm = re.match(pattern, title, re.IGNORECASE)
+                        if not lm:
+                            continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        prow = _match_player(pname, latest, position_filter=pos)
+                        if prow is None:
+                            continue
+                        p_yes, mu = _p_ge_line(prow, m, s, line_val)
+                        yes_edge = p_yes - yes_mid
+                        if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
+                            _, team = get_team_from_ticker(ticker)
+                            label = f"{pname} ({team}) {line_val}+ {desc}"
+                            all_bets.append({
+                                "type": mname, "ticker": ticker,
+                                "side": "yes",
+                                "price_cents": max(1, int(yes_mid * 100)),
+                                "model_prob": round(p_yes, 4),
+                                "market_prob": round(yes_mid, 4),
+                                "edge": round(yes_edge, 4),
+                                "contracts": 1,
+                                "player": pname,
+                                "team": team,
+                                "line_val": line_val,
+                                "stat_desc": desc,
+                                "label": label,
+                            })
+                            count += 1
+                    except Exception:
+                        pass
+                print(f"  {mname:5s} ({series:10s}): {count} qualifying bets")
+        else:
+            print("  No feature data available")
     except Exception as e:
-        print(f"  KS error: {e}")
+        print(f"  MLB props error: {e}")
 
     # === 2. MLB F5 (First 5 Innings - Team Win) ===
     print()
@@ -291,15 +305,17 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  Compounder error: {e}")
 
-    # === 5. Multi-Leg Parlays ===
+    # === 5. Multi-Leg Parlays (all MLB prop types + F5) ===
     print()
     print("  " + "-" * 66)
-    print("  5. MULTI-LEG PARLAYS (2/3/4-leg - KS only)")
+    print("  5. MULTI-LEG PARLAYS (2/3/4-leg — all prop types + F5)")
     print("  " + "-" * 66)
     parlay_opps = []
     for b in all_bets:
-        if b["type"] not in ("KS",):
-            continue  # Only reliable models for parlays
+        bt = b["type"]
+        # Include MLB player props + F5; exclude COMP (safe compounder is a different strategy)
+        if bt not in ("KS", "HR", "TB", "HRR", "F5"):
+            continue
         if b.get("price_cents", 50) < 1 or b.get("price_cents", 50) > 99:
             continue
         if b.get("edge", 0) < min_edge:
@@ -315,7 +331,7 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     if len(parlay_opps) >= 2:
         finder = KalshiParlayFinder(min_edge=min_edge)
         parlay_results = finder.find_best(parlay_opps, top_n=5)
-        display_parlays(parlay_results, "Best 2/3/4-leg Combos (KS only)")
+        display_parlays(parlay_results, "Best 2/3/4-leg Combos (all props + F5)")
     else:
         print(f"  Need 2+ edges (have {len(parlay_opps)})")
 
@@ -326,20 +342,27 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("=" * 70)
     top_plays = sorted(all_bets, key=lambda x: -x.get("edge", 0))
     if top_plays:
-        print(f"  {'Rank':4s} {'Type':5s} {'Player/Team':30s} {'Bet':18s} {'Edge':8s} {'Price':6s}")
+        print(f"  {'Rank':4s} {'Type':5s} {'Player':30s} {'Bet':18s} {'Edge':8s} {'Price':6s}")
         print(f"  {'-'*4} {'-'*5} {'-'*30} {'-'*18} {'-'*8} {'-'*6}")
         for i, p in enumerate(top_plays[:15]):
             player = p.get("player", "")[:29]
             team = p.get("team", "")
             line = p.get("line_val", 0)
+            stat_desc = p.get("stat_desc", "")
             edge_str = f"{p.get('edge',0):+.0%}"
             price = p.get("price_cents", 0)
-            bet_str = f"{line}+ Ks" if p["type"] == "KS" else team[:16]
+            bt = p["type"]
+            if bt in ("KS", "HR", "TB", "HRR"):
+                bet_str = f"{line}+ {stat_desc}"
+            elif bt == "F5":
+                bet_str = f"{team[:10]} win"
+            else:
+                bet_str = team[:16]
             if team:
                 player_display = f"{player} ({team})"
             else:
                 player_display = player
-            print(f"  #{i+1:<2d} {p['type']:5s} {player_display[:29]:30s} {bet_str:18s} {edge_str:>8s} {price:3d}c")
+            print(f"  #{i+1:<2d} {bt:5s} {player_display[:29]:30s} {bet_str:18s} {edge_str:>8s} {price:3d}c")
         print(f"\n  Total qualifying: {len(top_plays)}")
 
         # Recommended bets
