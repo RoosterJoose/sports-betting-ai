@@ -11,6 +11,78 @@ NFL_STATS = ["passing_yards", "passing_tds", "passing_air_yards", "interceptions
 
 
 class NFLFeatureEngineer(FeatureEngineer):
+    def add_game_context(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Merge weather (roof, wind, temp) and vegas (spread_line, total_line) 
+        from nfl_data_py schedule into the weekly player DataFrame.
+
+        Schedule data is fetched via nfl_data_py.import_schedules() and merged
+        on (season, week, recent_team).
+        """
+        seasons = sorted(df["season"].dropna().unique().astype(int).tolist())
+        if not seasons:
+            return df
+        
+        import nfl_data_py as nfl
+        try:
+            sched = nfl.import_schedules(seasons)
+        except Exception:
+            return df
+        
+        if sched is None or sched.empty:
+            return df
+        
+        # Ensure consistent dtypes
+        sched["season"] = sched["season"].astype(int)
+        sched["week"] = sched["week"].astype(int)
+        
+        # Keep relevant schedule columns
+        sched_cols = ["season", "week", "home_team", "away_team",
+                      "roof", "temp", "wind", "spread_line", "total_line"]
+        sched_cols = [c for c in sched_cols if c in sched.columns]
+        sched = sched[sched_cols].copy()
+        
+        # Create team-level lookup: for each (season, week, team), store game info
+        home = sched.copy()
+        away = sched.copy()
+        
+        home["team"] = home["home_team"]
+        home["is_home"] = 1
+        away["team"] = away["away_team"]
+        away["is_home"] = 0
+        
+        team_sched = pd.concat([home, away], ignore_index=True)
+        if "roof" in team_sched.columns:
+            team_sched["is_dome"] = team_sched["roof"].isin(["dome", "closed"]).astype(int)
+        else:
+            team_sched["is_dome"] = 0
+        
+        # Drop raw roof (not a numeric feature)
+        drop_cols = ["home_team", "away_team", "roof"]
+        team_sched = team_sched.drop(columns=[c for c in drop_cols if c in team_sched.columns])
+        
+        # Merge into main DataFrame on recent_team
+        df = df.merge(team_sched, left_on=["season", "week", "recent_team"],
+                      right_on=["season", "week", "team"], how="left")
+        
+        # Drop redundant team column from right side
+        if "team" in df.columns:
+            df = df.drop(columns=["team"])
+        
+        # Fill missing values — use room temp (70) as default for missing, 0 for wind
+        if "temp" in df.columns:
+            df["temp"] = df["temp"].fillna(70.0)
+        if "wind" in df.columns:
+            df["wind"] = df["wind"].fillna(0.0)
+        if "spread_line" in df.columns:
+            df["spread_line"] = df["spread_line"].fillna(0.0)
+        if "total_line" in df.columns:
+            df["total_line"] = df["total_line"].fillna(0.0)
+        for col in ["is_dome", "is_home"]:
+            if col in df.columns:
+                df[col] = df[col].fillna(0).astype(int)
+        
+        return df
+
     def build_features(self, games: pd.DataFrame, opponent_games: pd.DataFrame = None) -> pd.DataFrame:
         """Build features from NFL weekly data, including opponent quality and DvP adjustments.
         
@@ -33,6 +105,9 @@ class NFLFeatureEngineer(FeatureEngineer):
         if "opponent_team" in df.columns:
             df["opponent"] = df["opponent_team"]
         
+        # ── Game context features (weather + vegas) ──────────────────────
+        df = self.add_game_context(df)
+
         # Compute opponent quality features (defensive stats)
         if "opponent" in df.columns and {"passing_yards", "rushing_yards", "receiving_yards"}.issubset(df.columns):
             # Build opponent defensive stats: for each game, what did each defense allow?
@@ -144,7 +219,9 @@ class NFLFeatureEngineer(FeatureEngineer):
                       "def_rec_yds_allowed_avg_5", "def_fp_allowed_avg_3",
                       "def_fp_allowed_avg_5", "def_pass_td_allowed_avg_3",
                       "def_int_made_avg_3", "dvp_fp_avg_3", "dvp_fp_avg_5",
-                      "dvp_rec_yds_avg_3", "dvp_rush_yds_avg_3"):
+                      "dvp_rec_yds_avg_3", "dvp_rush_yds_avg_3",
+                      "is_dome", "is_home", "temp", "wind",
+                      "spread_line", "total_line"):
                 keep_cols.append(c)
         
         df = df[[c for c in keep_cols if c in df.columns]].copy()

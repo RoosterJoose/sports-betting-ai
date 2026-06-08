@@ -103,6 +103,9 @@ def match_player(name, player_df):
 
 
 class MLBLinePredictor:
+    FEATURES_CACHE = MODEL_DIR.parent / "data" / "cache" / "mlb" / "_latest_features_cache.parquet"
+    FEATURES_META = MODEL_DIR.parent / "data" / "cache" / "mlb" / "_features_cache_meta.json"
+
     def __init__(self, sport_cfg):
         self.cfg = sport_cfg
         self._featured = None
@@ -110,8 +113,33 @@ class MLBLinePredictor:
         self._latest_features = None
         self._team_data = None
 
-    def load_data(self, pipeline=None):
-        """Load cached MLB features directly from parquet files."""
+    def load_data(self, pipeline=None, force_rebuild=False):
+        """Load cached MLB features, using a fast disk cache when possible.
+
+        The feature engineering step (MLBFeatureEngineer.build_features) takes
+        ~50s because it computes rolling averages for every player.  We cache
+        the result so that subsequent runs within the same day load in <1s.
+        """
+        import json
+        from datetime import date
+
+        today_str = date.today().isoformat()
+
+        # ── Try loading from fast cache ──────────────────────────────
+        if not force_rebuild and self.FEATURES_CACHE.exists() and self.FEATURES_META.exists():
+            try:
+                with open(self.FEATURES_META) as f:
+                    meta = json.load(f)
+                if meta.get("build_date") == today_str:
+                    self._latest_features = pd.read_parquet(self.FEATURES_CACHE)
+                    # Rebuild team aggregates from the cache too
+                    self._featured = self._latest_features.copy()
+                    self._build_team_aggregates()
+                    return True
+            except Exception:
+                pass  # Cache corrupted or stale — rebuild
+
+        # ── Build from source (slow path) ────────────────────────────
         cache_dir = MODEL_DIR.parent / "data" / "cache" / "mlb"
         cache_files = sorted(cache_dir.glob("game_logs_*.parquet"))
         if not cache_files:
@@ -141,6 +169,16 @@ class MLBLinePredictor:
         )
         # Precompute team aggregates
         self._build_team_aggregates()
+
+        # ── Save to fast cache ───────────────────────────────────────
+        try:
+            self.FEATURES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            self._latest_features.to_parquet(self.FEATURES_CACHE, index=False)
+            with open(self.FEATURES_META, "w") as f:
+                json.dump({"build_date": today_str}, f)
+        except Exception:
+            pass
+
         return True
 
     def _build_team_aggregates(self):

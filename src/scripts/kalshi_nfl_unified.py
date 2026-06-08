@@ -27,11 +27,15 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.data.kalshi import KalshiClient
 from src.config.settings import CONFIG_DIR, PROJECT_ROOT
+from src.models.calibrator import BetaCalibrator
+from src.models.distributions import p_ge_stat
 import toml, lightgbm as lgb
 from scipy.stats import norm as _norm
 
+LOG_TRANSFORM_STATS = {"PASS_TD", "TD", "INT"}
+
 MODEL_DIR = PROJECT_ROOT / "models" / "nfl"
-WANG_LAMBDA = 0.183
+WANG_LAMBDA = 0.183  # fallback when Beta Calibration not available
 
 # Market type configuration
 # model_name maps to training STAT_TARGETS
@@ -44,6 +48,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLPASSYDS",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*passing\s*yards?\?$",
         "desc": "passing yards",
+        "position": "QB",
         "info_only": False,
     },
     {
@@ -52,6 +57,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLPASSTD",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*passing\s*TDs?\?$",
         "desc": "passing TDs",
+        "position": "QB",
         "info_only": False,
     },
     {
@@ -60,6 +66,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLRUSHYDS",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*rushing\s*yards?\?$",
         "desc": "rushing yards",
+        "position": None,
         "info_only": False,
     },
     {
@@ -68,6 +75,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLRECYDS",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*receiving\s*yards?\?$",
         "desc": "receiving yards",
+        "position": None,
         "info_only": False,
     },
     {
@@ -76,6 +84,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLREC",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*receptions?\?$",
         "desc": "receptions",
+        "position": None,
         "info_only": False,
     },
     {
@@ -84,6 +93,7 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLTD",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*touchdowns?\?$",
         "desc": "touchdowns",
+        "position": None,
         "info_only": False,
     },
     {
@@ -92,17 +102,19 @@ MARKET_TYPES = [
         "series_ticker": "KXNFLINT",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*interceptions?\?$",
         "desc": "interceptions",
+        "position": "QB",
         "info_only": True,
     },
 ]
 
 
 def _load_regressor(model_name):
-    """Load LGBM model and residual_std from saved files."""
+    """Load LGBM model, residual_std, and BetaCalibrator from saved files."""
     mn = model_name.lower()
     model_path = MODEL_DIR / f"lgb_{mn}.txt"
     meta_path = MODEL_DIR / f"lgb_{mn}.meta.json"
     std_path = MODEL_DIR / f"lgb_{mn}.std.json"
+    cal_path = MODEL_DIR / f"lgb_{mn}_beta_cal.json"
     
     if not model_path.exists():
         # Fall back to old XGBoost
@@ -116,22 +128,19 @@ def _load_regressor(model_name):
                 with open(meta_path) as f:
                     meta = json.load(f)
                 std = meta.get("residual_std", 1.0)
-            # Get feature names from old model
             if hasattr(model, 'feature_names_in_'):
-                return model, std, list(model.feature_names_in_)
+                return model, std, list(model.feature_names_in_), BetaCalibrator.load(cal_path)
             else:
-                # Try loading old JSON model for feature names
                 xgb_json_path = MODEL_DIR / f"{mn}.json"
                 if xgb_json_path.exists():
                     import json as _json
                     with open(xgb_json_path) as f:
                         mdata = _json.load(f)
-                    # XGBoost JSON format has feature_names
                     feat_names = mdata.get('learner', {}).get('feature_names', [])
                     if feat_names:
-                        return model, std, feat_names
-                return model, std, []
-        return None, None, []
+                        return model, std, feat_names, BetaCalibrator.load(cal_path)
+                return model, std, [], BetaCalibrator.load(cal_path)
+        return None, None, [], BetaCalibrator()
     
     # LGBM model
     model = lgb.Booster(model_file=str(model_path))
@@ -144,7 +153,8 @@ def _load_regressor(model_name):
         with open(meta_path) as f:
             meta = json.load(f)
         std = meta.get("residual_std", 1.0)
-    return model, float(std), true_features
+    beta_cal = BetaCalibrator.load(cal_path)
+    return model, float(std), true_features, beta_cal
 
 
 def _match_player(title: str, latest: pd.DataFrame, position_filter: str = None) -> pd.Series:
@@ -200,8 +210,14 @@ def _match_player(title: str, latest: pd.DataFrame, position_filter: str = None)
     return None
 
 
-def _p_ge_line(row, model, residual_std, line_val, true_features):
-    """Compute P(stat >= line_val) using model prediction + normal residual."""
+def _p_ge_line(row, model, residual_std, line_val, true_features, stat_name="", beta_cal=None):
+    """Compute P(stat >= line_val) using NB/Poisson mapping + Beta Calibration.
+
+    For volume stats (PASS_YDS, RUSH_YDS, etc.): Negative Binomial distribution.
+    For rare events (TD, PASS_TD, INT): Poisson distribution.
+    Then applies Beta Calibration (fitted on test set) to correct systematic bias.
+    Falls back to normal CDF + Wang when Beta Calibration is unavailable.
+    """
     # Build feature vector matching what the model expects
     feat_dict = {}
     for c in true_features:
@@ -212,18 +228,22 @@ def _p_ge_line(row, model, residual_std, line_val, true_features):
             feat_dict[c] = float(val)
         else:
             feat_dict[c] = 0.0
-    
+
     X_pred = pd.DataFrame([feat_dict]).fillna(0)
-    
     mu = model.predict(X_pred)[0]
-    
     sigma = max(residual_std, 0.3)
-    p_raw = _norm.cdf(-(line_val - 0.5 - mu) / sigma)
-    p_raw = max(0.001, min(0.999, float(p_raw)))
-    
-    # Wang Transform for calibration
-    z = _norm.ppf(p_raw)
-    p_corrected = _norm.cdf(z - WANG_LAMBDA)
+
+    # ── Step 1: Distribution-appropriate probability mapping ────────────────
+    p_raw = p_ge_stat(stat_name, mu, sigma, line_val)
+
+    # ── Step 2: Beta Calibration (fitted from test set) ────────────────────
+    if beta_cal is not None and beta_cal._fitted:
+        p_corrected = beta_cal(p_raw)
+    else:
+        # Fallback: Wang Transform (same as before)
+        z = _norm.ppf(p_raw)
+        p_corrected = _norm.cdf(z - WANG_LAMBDA)
+
     p_corrected = min(0.75, float(p_corrected))
     return max(0.001, p_corrected), float(mu)
 
@@ -292,12 +312,12 @@ def main():
         info_only = mt.get("info_only", False)
 
         if model_name not in model_cache:
-            m, s, feats = _load_regressor(model_name)
+            m, s, feats, cal = _load_regressor(model_name)
             if m is None:
                 print(f"  Skipping {name}: no regressor for {model_name}")
                 continue
-            model_cache[model_name] = (m, s, feats)
-        reg_model, reg_std, true_features = model_cache[model_name]
+            model_cache[model_name] = (m, s, feats, cal)
+        reg_model, reg_std, true_features, beta_cal = model_cache[model_name]
 
         print(f"Scanning {name} ({series})...", flush=True)
         try:
@@ -336,12 +356,29 @@ def main():
                 if row is None:
                     continue
 
+                # For unfiltered markets (RUSH_YDS, REC, etc.), skip non-relevant positions
+                # to avoid cross-position name collisions
+                pos_filter = mt.get("position")
+                if pos_filter is None:
+                    row_pos = str(row.get("position", "")).upper()
+                    # Determine which positions are relevant for this market
+                    if mt["name"] in ("RUSH_YDS", "RUSH+REC_YDS"):
+                        if row_pos not in ("QB", "RB", "WR", "TE", "FB"):
+                            continue
+                    elif mt["name"] in ("REC", "REC_YDS"):
+                        if row_pos not in ("WR", "TE"):
+                            continue
+                    elif mt["name"] == "TD":
+                        if row_pos not in ("QB", "RB", "WR", "TE", "FB"):
+                            continue
+
                 # Skip if all rolling features are NaN (no game history)
                 avg_cols = [c for c in row.index if c.endswith("_avg_7") and isinstance(row[c], (int, float))]
                 if avg_cols and all(pd.isna(row[c]) for c in avg_cols):
                     continue
 
-                p_yes, mu = _p_ge_line(row, reg_model, reg_std, line_val, true_features)
+                p_yes, mu = _p_ge_line(row, reg_model, reg_std, line_val, true_features,
+                                          stat_name=name, beta_cal=beta_cal)
                 yes_edge = p_yes - yes_mid
                 no_edge = (1 - p_yes) - (1 - yes_mid)
 

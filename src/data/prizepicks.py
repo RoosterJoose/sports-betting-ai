@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import time
 import uuid
 from datetime import datetime
@@ -179,26 +180,10 @@ class PrizePicksScraper(BookDataSource):
         return df
 
 
-class PrizePicksApi(BookDataSource):
-    def __init__(self, api_key: str, provider: str = "dailyfantasyapi"):
-        if provider == "dailyfantasyapi":
-            self.base = "https://api.dailyfantasyapi.io"
-        elif provider == "sharpapi":
-            self.base = "https://api.sharpapi.io/api/v1"
-        else:
-            raise ValueError(f"Unknown provider: {provider}")
-        self.api_key = api_key
-        self.client = httpx.Client(headers={"x-api-key": api_key}, timeout=30)
+def get_prizepicks_client() -> BookDataSource:
+    """Factory: returns a PrizePicks scraper instance.
 
-    def fetch_lines(self, sport: str) -> pd.DataFrame:
-        resp = self.client.get(f"{self.base}/prizepicks/projections", params={"sport": sport})
-        resp.raise_for_status()
-        return pd.DataFrame(resp.json())
-
-    def fetch_settlements(self, sport: str, date: datetime) -> pd.DataFrame:
-        resp = self.client.get(
-            f"{self.base}/prizepicks/settlements",
-            params={"sport": sport, "date": date.strftime("%Y-%m-%d")},
-        )
-        resp.raise_for_status()
-        return pd.DataFrame(resp.json())
+    SharpAPI doesn't support PrizePicks data (only sportsbook odds),
+    so direct scraping is our only option for PrizePicks lines.
+    """
+    return PrizePicksScraper()

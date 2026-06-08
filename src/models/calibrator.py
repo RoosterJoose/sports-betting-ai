@@ -52,6 +52,86 @@ class PlattCalibrator:
         return 1.0 / (1.0 + np.exp(-logit_val))
 
 
+class BetaCalibrator:
+    """Beta Calibration for regressor-based probability estimates.
+
+    Maps raw (normal-CDF) probabilities to calibrated probabilities using
+    the Beta distribution family.  Fits:
+        logit(p_cal) = a * log(p_raw) - b * log(1 - p_raw) + c
+
+    Unlike Platt scaling (which assumes a sigmoidal mapping), Beta calibration
+    can handle both sigmoidal and inverse-sigmoidal shapes, making it better
+    suited for calibrating extreme tail probabilities in sports stats.
+
+    Reference: Kull et al. (2017) "Beyond sigmoids"
+    """
+
+    def __init__(self):
+        self.a = 1.0
+        self.b = 1.0
+        self.c = 0.0
+        self._fitted = False
+
+    def fit(self, probs: np.ndarray, labels: np.ndarray):
+        """Fit Beta calibration via logistic regression on log-prob features."""
+        from sklearn.linear_model import LogisticRegression
+        p = np.clip(probs, 1e-6, 1 - 1e-6)
+        X = np.column_stack([np.log(p), np.log(1 - p)])
+        lr = LogisticRegression(C=1e6, solver="lbfgs")
+        lr.fit(X, labels)
+        self.a = float(lr.coef_[0, 0])
+        self.b = -float(lr.coef_[0, 1])  # sign flip for -b*log(1-p) formulation
+        self.c = float(lr.intercept_[0])
+        self._fitted = True
+
+    def calibrate(self, probs: np.ndarray) -> np.ndarray:
+        """Calibrate probability array using the fitted Beta model."""
+        if not self._fitted:
+            return probs
+        p = np.clip(probs, 1e-6, 1 - 1e-6)
+        logit_cal = self.a * np.log(p) - self.b * np.log(1 - p) + self.c
+        return expit(logit_cal)
+
+    @classmethod
+    def fit_from_df(cls, probs: np.ndarray, outcomes: np.ndarray) -> "BetaCalibrator":
+        """Factory: fit and return a BetaCalibrator."""
+        bc = cls()
+        bc.fit(probs, outcomes)
+        return bc
+
+    def save(self, path: Path):
+        with open(path, "w") as f:
+            json.dump({"a": self.a, "b": self.b, "c": self.c}, f)
+
+    @classmethod
+    def load(cls, path: Path) -> "BetaCalibrator":
+        bc = cls()
+        if path.exists():
+            with open(path) as f:
+                data = json.load(f)
+            bc.a = data.get("a", 1.0)
+            bc.b = data.get("b", 1.0)
+            bc.c = data.get("c", 0.0)
+            bc._fitted = True
+        return bc
+
+    def __call__(self, prob: float | np.ndarray) -> float | np.ndarray:
+        """Calibrate probability value(s). Accepts both scalar and array inputs."""
+        if not self._fitted:
+            return prob
+        # Use atleast_1d so indexing always works (scalar -> 1-element array)
+        prob_arr = np.atleast_1d(np.asarray(prob, dtype=float))
+        # Preserve boundary probabilities (0 or 1) as-is
+        boundary = (prob_arr <= 0) | (prob_arr >= 1)
+        p = np.clip(prob_arr, 1e-6, 1 - 1e-6)
+        logit_val = self.a * np.log(p) - self.b * np.log(1 - p) + self.c
+        result = expit(logit_val)
+        result[boundary] = prob_arr[boundary]
+        if isinstance(prob, (int, float, np.floating)):
+            return float(result[0])
+        return result
+
+
 class EmpiricalCalibrator:
     """Empirical calibration for regressor-based probability estimates.
 

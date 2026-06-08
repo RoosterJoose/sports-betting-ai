@@ -19,14 +19,15 @@ import xgboost as xgb
 from scipy.stats import norm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.data.prizepicks import PrizePicksScraper
+from src.data.prizepicks import get_prizepicks_client
 from src.features.mlb import MLBFeatureEngineer
 from src.config.settings import SportConfig, CONFIG_DIR
+from src.models.calibrator import BetaCalibrator
 import toml
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models" / "mlb"
+CALIB_DIR = MODEL_DIR / "calibration"
 BREAKEVEN = 0.542  # 5/6 Flex Play breakeven
-WANG_LAMBDA = 0.183
 
 # PrizePicks stat_type → ALL-position regressor model name
 PP_REG_MAP = {
@@ -60,16 +61,21 @@ def load_regressor(model_name):
     path = MODEL_DIR / f"reg_{model_name.lower()}.json"
     meta_path = MODEL_DIR / f"reg_{model_name.lower()}.meta.json"
     if not path.exists() or not meta_path.exists():
-        return None, None, None
+        return None, None, None, None
     with open(meta_path) as f:
         meta = json.load(f)
     model = xgb.XGBRegressor()
     model.load_model(str(path))
-    return model, meta.get("residual_std", 1.0), meta.get("r2", 0)
+    # Load Beta Calibration if available
+    beta_cal = BetaCalibrator.load(CALIB_DIR / f"{model_name.lower()}_beta_cal.json")
+    return model, meta.get("residual_std", 1.0), meta.get("r2", 0), beta_cal
 
 
-def p_ge_line(feat_row, model, residual_std, line_val):
-    """P(stat ≥ line_val) = 1 − Φ((line − 0.5 − μ) / σ) → Wang-corrected."""
+def p_ge_line(feat_row, model, residual_std, line_val, beta_cal=None):
+    """P(stat ≥ line_val) using normal CDF → Beta Calibration.
+
+    Falls back to raw normal-CDF probability when Beta Calibration is unavailable.
+    """
     mu = model.predict(
         pd.DataFrame([{c: feat_row.get(c, 0)
                        for c in model.feature_names_in_}]).fillna(0)
@@ -77,8 +83,12 @@ def p_ge_line(feat_row, model, residual_std, line_val):
     sigma = max(residual_std, 0.3)
     p_raw = 1.0 - norm.cdf((line_val - 0.5 - mu) / sigma)
     p_raw = max(0.001, min(0.999, float(p_raw)))
-    z = norm.ppf(p_raw)
-    p_corr = norm.cdf(z - WANG_LAMBDA)
+
+    if beta_cal is not None and beta_cal._fitted:
+        p_corr = beta_cal(p_raw)
+    else:
+        p_corr = p_raw
+
     return max(0.001, min(0.999, float(p_corr))), float(mu)
 
 
@@ -98,13 +108,14 @@ def main():
     # ── 2. Load regressors ──
     loaded = {}
     for model_name in set(PP_REG_MAP.values()):
-        m, s, r2 = load_regressor(model_name)
+        m, s, r2, bc = load_regressor(model_name)
         if m is not None:
-            loaded[model_name] = (m, s, r2)
+            loaded[model_name] = (m, s, r2, bc)
 
     print(f"Regressors: {list(loaded.keys())}", flush=True)
-    for name, (_, s, r2) in loaded.items():
-        print(f"  {name:12s} σ_res={s:.3f}  R²={r2:.3f}", flush=True)
+    for name, (_, s, r2, bc) in loaded.items():
+        bc_str = f" + BetaCal" if bc._fitted else ""
+        print(f"  {name:12s} σ_res={s:.3f}  R²={r2:.3f}{bc_str}", flush=True)
 
     # ── 3. Load MLB historical data → features ──
     cache_files = sorted(Path("data/cache/mlb").glob("game_logs_*.parquet"))
@@ -123,7 +134,7 @@ def main():
     latest = all_featured.groupby("player_id").last().reset_index()
 
     # ── 4. Fetch PrizePicks lines ──
-    scraper = PrizePicksScraper()
+    scraper = get_prizepicks_client()
     lines = scraper.fetch_lines("mlb", league_id=2)
     print(f"PrizePicks: {len(lines)} total lines", flush=True)
 
@@ -146,7 +157,7 @@ def main():
         if reg_name not in loaded:
             errors.append(("no_regressor", pp_stat))
             continue
-        reg_model, reg_std, _ = loaded[reg_name]
+        reg_model, reg_std, _, beta_cal = loaded[reg_name]
 
         pname = str(row.get("player_name", "")).strip()
         if not pname or pname == "nan":
@@ -192,8 +203,8 @@ def main():
             errors.append(("pitcher_no_hitter_prop", pname))
             continue
 
-        # Predict P(≥line) via regressor + normal CDF + Wang
-        prob, mu = p_ge_line(feat_row.to_dict(), reg_model, reg_std, pp_line)
+        # Predict P(≥line) via regressor + normal CDF + Beta Calibration
+        prob, mu = p_ge_line(feat_row.to_dict(), reg_model, reg_std, pp_line, beta_cal=beta_cal)
 
         # Edge vs PrizePicks breakeven
         edge = prob - BREAKEVEN

@@ -9,7 +9,7 @@ from xgboost import XGBClassifier, XGBRegressor
 
 warnings.filterwarnings("ignore")
 
-from src.data.prizepicks import PrizePicksScraper
+from src.data.prizepicks import get_prizepicks_client
 from src.features.ufc import build_ufc_features, FEATURE_COLS, WEIGHT_CLASS_FINISH_PCT, STAT_INFO
 
 MODEL_DIR = Path("models/ufc")
@@ -160,7 +160,7 @@ def predict_over_rounds(
 
 
 def get_prizepicks_ufc():
-    scraper = PrizePicksScraper()
+    scraper = get_prizepicks_client()
     lines = scraper.fetch_lines("ufc")
     if lines.empty:
         print("No UFC lines on PrizePicks")

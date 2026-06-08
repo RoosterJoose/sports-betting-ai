@@ -17,10 +17,15 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.config.settings import CONFIG_DIR, PROJECT_ROOT
 from src.features.nfl import NFLFeatureEngineer
+from src.models.calibrator import BetaCalibrator
+from src.models.distributions import p_ge_stat
 import toml, lightgbm as lgb
 
 MODEL_DIR = PROJECT_ROOT / "models" / "nfl"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+# Rare-event stats benefit from log-transform during regression (stabilises variance)
+LOG_TRANSFORM_STATS: set[str] = {"TD", "PASS_TD", "INT"}
 
 STAT_TARGETS = [
     ("PASS_YDS",    "passing_yards",    "all", None),
@@ -94,7 +99,9 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
                    "team_pass_yds_avg_3", "team_pass_yds_avg_5", "team_rush_yds_avg_3",
                    "def_pass_yds_allowed_avg_3", "def_pass_yds_allowed_avg_5",
                    "def_rush_yds_allowed_avg_3", "def_rec_yds_allowed_avg_3",
-                   "def_fp_allowed_avg_3", "def_fp_allowed_avg_5"}
+                   "def_fp_allowed_avg_3", "def_fp_allowed_avg_5",
+                   "is_dome", "is_home", "temp", "wind",
+                   "spread_line", "total_line"}
     feature_cols = [c for c in featured.columns
                     if (lagged_pattern.match(c)
                         or c.endswith("_ewm")
@@ -124,6 +131,15 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
         return None
 
     y = df[target_col].values
+
+    # ── Log-transform for rare-event stats ──────────────────────────────────
+    use_log = stat_name in LOG_TRANSFORM_STATS
+    if use_log:
+        y_original = y.copy()
+        y = np.log1p(np.maximum(0, y))
+        n_pos = int((y_original > 0).sum())
+        print(f"    Log-transform applied ({n_pos}/{len(y)} nonzero)")
+
     available = [c for c in feature_cols if c in df.columns]
     print(f"  Features: {len(available)}")
     X = df[available].copy()
@@ -137,10 +153,16 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
         split = int(len(X) * 0.8)
         X_train, X_test = X.iloc[:split], X.iloc[split:]
         y_train, y_test = y[:split], y[split:]
+        # Keep original-scale y for calibration
+        if use_log:
+            _, y_test_orig = np.array_split(y_original[sort_idx], [split])
+        else:
+            y_test_orig = y_test.copy()
     else:
         split = int(len(X) * 0.8)
         X_train, X_test = X.iloc[:split], X.iloc[split:]
         y_train, y_test = y[:split], y[split:]
+        y_test_orig = y_test.copy()
 
     model = lgb.LGBMRegressor(
         n_estimators=1000, num_leaves=31, learning_rate=0.02,
@@ -154,6 +176,12 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
               callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
 
     preds = model.predict(X_test)
+
+    # ── Back-transform log-transformed predictions ──────────────────────────
+    if use_log:
+        preds = np.expm1(preds)
+        y_test = y_test_orig  # use original-scale for residuals & calibration
+
     residuals = y_test - preds
     residual_std = float(np.std(residuals))
     mae = float(np.mean(np.abs(residuals)))
@@ -163,14 +191,16 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
     print(f"  {stat_name:12s}: MAE={mae:.3f}, RMSE={rmse:.3f}, R\u00b2={r2:.3f}, \u03c3_res={residual_std:.3f}")
     print(f"    Best iteration: {model.best_iteration_}")
 
-    # Calibration check
-    from scipy.stats import norm
+    # ── Calibration check using NB/Poisson mapping ─────────────────────────
     y_mean = y_test.mean()
     cal_bins = []
     max_line = max(1, int(y_mean * 2.5))
     min_line = max(0, int(y_mean * 0.2))
+    raw_probs_all = []
+    outcomes_all = []
     for line_val in range(min_line, max_line + 1):
-        p_model = 1.0 - norm.cdf((line_val - 0.5 - preds) / residual_std)
+        p_model = np.array([p_ge_stat(stat_name, preds[i], residual_std, line_val)
+                            for i in range(len(preds))])
         p_model_mean = float(np.mean(p_model))
         p_actual = float((y_test >= line_val).mean())
         bias = p_model_mean - p_actual
@@ -181,8 +211,27 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="all", compute_fn=N
             "bias": round(bias, 4),
             "n": int(len(y_test)),
         })
+        raw_probs_all.extend(p_model.tolist())
+        outcomes_all.extend((y_test >= line_val).astype(int).tolist())
         if line_val in (min_line, int(y_mean), max_line) or abs(bias) > 0.05:
             print(f"      line={line_val:2d}: P_model={p_model_mean:.1%}, P_actual={p_actual:.1%}, bias={bias:+.1%}")
+
+    # ── Fit Beta Calibration on test-set predictions ──────────────────────
+    raw_arr = np.array(raw_probs_all)
+    out_arr = np.array(outcomes_all, dtype=int)
+    # Filter out trivial predictions (p near 0 or 1) to avoid degenerate fits
+    valid = (raw_arr > 0.01) & (raw_arr < 0.99)
+    if valid.sum() > 100:
+        beta_cal = BetaCalibrator()
+        beta_cal.fit(raw_arr[valid], out_arr[valid])
+        beta_cal.save(MODEL_DIR / f"lgb_{stat_name.lower()}_beta_cal.json")
+        # Show calibration effect on test set
+        cal_probs = beta_cal.calibrate(raw_arr[valid])
+        before_bias = float(np.mean(raw_arr[valid] - out_arr[valid]))
+        after_bias = float(np.mean(cal_probs - out_arr[valid]))
+        print(f"    BetaCal: bias {before_bias:+.3f} → {after_bias:+.3f} (n={valid.sum()})")
+    else:
+        print(f"    BetaCal: skipped (only {valid.sum()} non-trivial predictions)")
 
     # Feature importance
     imp = pd.DataFrame({"feature": available, "importance": model.feature_importances_})

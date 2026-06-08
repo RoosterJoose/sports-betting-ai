@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config.settings import settings, PROJECT_ROOT
-from src.data.prizepicks import PrizePicksScraper
+from src.data.prizepicks import get_prizepicks_client
 from src.utils.database import Database
 from src.utils.logger import setup_logger, TradeLogger
 
@@ -16,7 +16,7 @@ def cmd_scan(args):
     db = Database(settings.database_path)
     trade_log = TradeLogger(logger)
 
-    scraper = PrizePicksScraper()
+    scraper = get_prizepicks_client()
     lines = scraper.fetch_lines(args.sport, league_id=args.league_id)
     if lines.empty:
         print(f"No lines found for {args.sport}")
@@ -85,7 +85,7 @@ def cmd_predict(args):
     import warnings; warnings.filterwarnings("ignore", ".*Downcasting.*")
 
     from src.data.pipeline import DataPipeline
-    from src.data.prizepicks import PrizePicksScraper
+    from src.data.prizepicks import get_prizepicks_client
 
     sport_cfg = settings.load_sport_config(args.sport)
     if not sport_cfg:
@@ -94,7 +94,7 @@ def cmd_predict(args):
 
     print(f"Scanning PrizePicks + models for {sport_cfg.display_name}")
 
-    scraper = PrizePicksScraper()
+    scraper = get_prizepicks_client()
     lines = scraper.fetch_lines(args.sport, league_id=args.league_id)
     if lines.empty:
         print("No PrizePicks lines found")

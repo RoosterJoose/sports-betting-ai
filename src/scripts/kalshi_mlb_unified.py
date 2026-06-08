@@ -32,21 +32,38 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.data.kalshi import KalshiClient
 from src.config.settings import CONFIG_DIR, PROJECT_ROOT
+from src.models.calibrator import EmpiricalCalibrator, BetaCalibrator
+from src.models.distributions import p_ge_stat
 import toml, lightgbm as lgb
 from scipy.stats import norm as _norm
 
 MODEL_DIR = PROJECT_ROOT / "models" / "mlb"
-
-WANG_LAMBDA = 0.183
 CALIB_DIR = MODEL_DIR / "calibration"
 
-from src.models.calibrator import EmpiricalCalibrator
-_calibrator = None
+WANG_LAMBDA = 0.30  # Fallback when empirical calibration not available
+
+# Module-level calibration singletons
+_calibrator: EmpiricalCalibrator | None = None
+_beta_calibrators: dict[str, BetaCalibrator] = {}
+
+
 def _get_cal():
     global _calibrator
     if _calibrator is None and CALIB_DIR.exists():
         _calibrator = EmpiricalCalibrator(CALIB_DIR)
     return _calibrator
+
+
+def _get_beta_cal(stat_name: str) -> BetaCalibrator | None:
+    """Load per-stat BetaCalibrator from calibration dir (cached)."""
+    key = stat_name.lower()
+    if key in _beta_calibrators:
+        bc = _beta_calibrators[key]
+        return bc if bc._fitted else None
+    path = CALIB_DIR / f"{key}_beta_cal.json"
+    bc = BetaCalibrator.load(path)
+    _beta_calibrators[key] = bc
+    return bc if bc._fitted else None
 
 # registry: (model_name, raw_col, series_ticker, position_filter, title_pattern)
 # pattern groups: player_name, line_value
@@ -59,7 +76,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*strikeouts?\??$",
         "desc": "strikeouts",
-        "info_only": True,
+        "info_only": False,
     },
     {
         "name": "HR",
@@ -68,7 +85,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*home\s*runs?\??$",
         "desc": "home runs",
-        "info_only": True,
+        "info_only": False,
     },
     {
         "name": "TB",
@@ -77,7 +94,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*total\s*bases?\??$",
         "desc": "total bases",
-        "info_only": True,
+        "info_only": False,
     },
     {
         "name": "HRR",
@@ -86,7 +103,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits\s*\+\s*runs\s*\+\s*RBIs?\??$",
         "desc": "hits+runs+RBIs",
-        "info_only": True,
+        "info_only": False,
     },
     # New market types (no active markets as of June 2026 — patterns inferred)
     {
@@ -218,6 +235,13 @@ def _match_player(title, lc, position_filter=None):
     return None
 
 def _p_ge_line(row, model, residual_std, line_val, stat_name=None):
+    """Predict P(stat >= line_val) using empirical calibration → Beta Calibration → Wang.
+
+    Calibration cascade:
+      1. Multi-bin empirical calibration (built from test set) — best when available
+      2. Beta Calibration (per-stat, fitted from test set residuals)
+      3. Wang Transform (global fallback, λ=0.30)
+    """
     # Handle both LightGBM (Booster) and XGBoost (XGBRegressor)
     if hasattr(model, 'feature_name'):
         feats = model.feature_name()
@@ -227,18 +251,52 @@ def _p_ge_line(row, model, residual_std, line_val, stat_name=None):
         feats = [c for c in row.index if isinstance(row[c], (int, float))]
     mu = model.predict(pd.DataFrame([{c: row.to_dict().get(c, 0) for c in feats}]).fillna(0))[0]
     sigma = max(residual_std, 0.3)
-    p_raw = _norm.cdf(-(line_val - 0.5 - mu) / sigma)
-    p_raw = max(0.001, min(0.999, float(p_raw)))
+    # Use distribution-appropriate mapping (NB for SO/TB/H, Poisson for HR/SB)
+    p_raw = float(p_ge_stat(stat_name or "SO", mu, sigma, line_val))
+
+    # ── Step 1: Multi-bin empirical calibration ────────────────────────────
     cal = _get_cal()
-    if cal and stat_name:
-        p_cal = cal.calibrate(stat_name.lower(), line_val, p_raw)
-        p_cal = min(0.75, p_cal)  # hard cap: never trust over 75%
-        return p_cal, float(mu)
-    # Fallback: Wang Transform
+    if cal is not None and stat_name is not None:
+        stat_key = stat_name.lower()
+        line_key = str(line_val)
+        bins = cal.calibration.get(stat_key, {}).get(line_key, {}).get("bins", [])
+        if len(bins) > 1:  # multi-bin = properly calibrated
+            p_cal = cal.calibrate(stat_key, line_val, p_raw)
+            p_cal = min(0.75, max(0.001, float(p_cal)))
+            return p_cal, float(mu)
+        # Single bin = old format (flat per-line rate) — fall through
+
+    # ── Step 2: Beta Calibration (per-stat) ────────────────────────────────
+    if stat_name is not None:
+        beta_cal = _get_beta_cal(stat_name)
+        if beta_cal is not None and beta_cal._fitted:
+            p_cor = beta_cal(p_raw)
+            p_cor = min(0.75, max(0.001, float(p_cor)))
+            return p_cor, float(mu)
+
+    # ── Step 3: Wang Transform (fallback) ──────────────────────────────────
     z = _norm.ppf(p_raw)
     p_corrected = _norm.cdf(z - WANG_LAMBDA)
-    p_corrected = min(0.75, float(p_corrected))
-    return max(0.001, p_corrected), float(mu)
+    p_corrected = min(0.75, max(0.001, float(p_corrected)))
+    return p_corrected, float(mu)
+
+# Module-level cache for recency check data
+_recency_df: pd.DataFrame | None = None
+
+def _get_recency_df():
+    """Load and cache the game logs parquet for recency checks.
+
+    Without caching, this function reads a 2.5MB parquet file every
+    time it's called (~400 times per scan), which dominates runtime.
+    """
+    global _recency_df
+    if _recency_df is not None:
+        return _recency_df
+    cache_path = PROJECT_ROOT / "data" / "cache" / "mlb" / "game_logs_2026_2025_2024.parquet"
+    if cache_path.exists():
+        _recency_df = pd.read_parquet(cache_path)
+    return _recency_df
+
 
 def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tuple[float, float, bool]:
     """Compare model prediction to actual 2026 rate for a player.
@@ -248,10 +306,9 @@ def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tup
     Returns (actual_rate, -1, True) where actual_rate=-1 means insufficient data.
     """
     try:
-        cache_path = PROJECT_ROOT / "data" / "cache" / "mlb" / "game_logs_2026_2025_2024.parquet"
-        if not cache_path.exists():
+        df = _get_recency_df()
+        if df is None:
             return -1, -1, True
-        df = pd.read_parquet(cache_path)
         
         # Determine filter: pitchers use gs==1, hitters filter by position
         if stat_col == "so":
@@ -425,9 +482,11 @@ def main():
                 recency_rate, _, _ = _recency_check(player_name, line_val, stat_col=model_name.lower())
                 recency_used = ""
                 if recency_rate >= 0:
-                    p_final = max(p_yes, recency_rate)  # use HIGHER estimate (more conservative for YES edge)
-                    if abs(p_yes - recency_rate) > 0.20:
-                        recency_used = f" (model={p_yes:.0%}→{p_final:.0%})"
+                    # Use recency rate as primary when available (2026 actual data beats model)
+                    # min = conservative for YES betting (lower prob = less edge)
+                    p_final = min(p_yes, recency_rate)
+                    if abs(p_yes - recency_rate) > 0.10:
+                        recency_used = f" (recency={recency_rate:.0%} model={p_yes:.0%})"
                         p_yes = p_final
                 else:
                     p_final = p_yes

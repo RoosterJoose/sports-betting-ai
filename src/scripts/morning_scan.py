@@ -282,10 +282,442 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  World Cup error: {e}")
 
-    # === 4. Safe Compounder ===
+    # === 4. NFL PLAYER PROPS (PASS_YDS, PASS_TD, RUSH_YDS, REC, REC_YDS, TD, INT) ===
     print()
     print("  " + "-" * 66)
-    print("  4. SAFE COMPOUNDER (NO-side on longshots)")
+    print("  4. NFL PLAYER PROPS (PASS_YDS, PASS_TD, RUSH_YDS, REC, REC_YDS, TD)")
+    print("  " + "-" * 66)
+    nfl_bet_count = 0
+    try:
+        from src.scripts.kalshi_nfl_unified import (
+            load_features as load_nfl_features,
+            MARKET_TYPES as NFL_MARKET_TYPES,
+            _load_regressor as _load_nfl_regressor,
+            _match_player as _match_nfl_player,
+            _p_ge_line as _p_ge_nfl_line,
+        )
+        nfl_latest = load_nfl_features()
+        if nfl_latest is not None and not nfl_latest.empty:
+            # Take latest week per player
+            if "game_date" in nfl_latest.columns:
+                nfl_latest = nfl_latest.sort_values("game_date").groupby("player_id").last().reset_index()
+            nfl_players = len(nfl_latest)
+            print(f"  Loaded {nfl_players} players", flush=True)
+
+            nfl_model_cache = {}
+            for mt in NFL_MARKET_TYPES:
+                if mt.get("info_only", True):
+                    continue
+                mname = mt["name"]
+                series = mt["series_ticker"]
+                pattern = mt["pattern"]
+                pos_filter = mt.get("position")
+                model_name = mt["model_name"]
+                desc = mt["desc"]
+
+                # Try to fetch markets — if none exist (off-season), skip gracefully
+                try:
+                    mkts = kc.list_markets(series_ticker=series, limit=500)
+                    if mkts is None or mkts.empty:
+                        print(f"  {mname:8s} ({series:12s}): no markets (off-season?)")
+                        continue
+                except Exception:
+                    print(f"  {mname:8s} ({series:12s}): cannot reach Kalshi")
+                    continue
+
+                # Load model (cached per model_name)
+                if model_name not in nfl_model_cache:
+                    m, s, feats, cal = _load_nfl_regressor(model_name)
+                    if m is None:
+                        print(f"  {mname:8s}: no regressor for {model_name}")
+                        continue
+                    nfl_model_cache[model_name] = (m, s, feats, cal)
+                reg_model, reg_std, true_features, beta_cal = nfl_model_cache[model_name]
+
+                count = 0
+                for _, row in mkts.iterrows():
+                    try:
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0:
+                            continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+
+                        lm = re.match(pattern, title, re.IGNORECASE)
+                        if not lm:
+                            continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        if line_val <= 0:
+                            continue
+
+                        row_match = _match_nfl_player(pname, nfl_latest, position_filter=pos_filter)
+                        if row_match is None:
+                            continue
+
+                        # Skip players with insufficient data
+                        avg_cols = [c for c in row_match.index
+                                    if c.endswith("_avg_7") and isinstance(row_match[c], (int, float))]
+                        if avg_cols and all(pd.isna(row_match[c]) for c in avg_cols):
+                            continue
+
+                        p_yes, mu = _p_ge_nfl_line(
+                            row_match, reg_model, reg_std, line_val, true_features,
+                            stat_name=mname, beta_cal=beta_cal,
+                        )
+                        yes_edge = p_yes - yes_mid
+
+                        if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
+                            label = f"{pname} {line_val}+ {desc}"
+                            all_bets.append({
+                                "type": mname, "ticker": ticker,
+                                "side": "yes",
+                                "price_cents": max(1, int(yes_mid * 100)),
+                                "model_prob": round(p_yes, 4),
+                                "market_prob": round(yes_mid, 4),
+                                "edge": round(yes_edge, 4),
+                                "contracts": 1,
+                                "player": pname,
+                                "team": "",
+                                "line_val": line_val,
+                                "stat_desc": desc,
+                                "label": label,
+                            })
+                            count += 1
+                    except Exception:
+                        pass
+
+                print(f"  {mname:8s} ({series:12s}): {count} qualifying bets")
+                nfl_bet_count += count
+        else:
+            print("  No feature data available (run data pipeline first)")
+    except Exception as e:
+        print(f"  NFL props error: {e}")
+
+    if nfl_bet_count == 0:
+        print("  (NFL is off-season — no markets or no qualifying edges)")
+
+    # === 5. NBA PLAYER PROPS (PTS, REB, AST, BLK, STL, 3PT, FTM, PRA, PA, PR, RA) ===
+    print()
+    print("  " + "-" * 66)
+    print("  5. NBA PLAYER PROPS (PTS, REB, AST, BLK, STL, 3PT, FTM, PRA)")
+    print("  " + "-" * 66)
+    nba_bet_count = 0
+    try:
+        from src.scripts.kalshi_nba_unified import (
+            load_features as load_nba_features,
+            MARKET_TYPES as NBA_MARKET_TYPES,
+            _load_regressor as _load_nba_regressor,
+            _match_player as _match_nba_player,
+            _p_ge_line as _p_ge_nba_line,
+        )
+        nba_latest = load_nba_features()
+        if nba_latest is not None and not nba_latest.empty:
+            # Take latest game per player
+            if "game_date" in nba_latest.columns:
+                nba_latest = nba_latest.sort_values("game_date").groupby("player_id").last().reset_index()
+            nba_players = len(nba_latest)
+            print(f"  Loaded {nba_players} players", flush=True)
+
+            nba_model_cache = {}
+            for mt in NBA_MARKET_TYPES:
+                if mt.get("info_only", True):
+                    mname = mt["name"]
+                    series = mt["series_ticker"]
+                    desc = mt["desc"]
+                    # Still try to fetch info_only markets for display
+                    try:
+                        mkts = kc.list_markets(series_ticker=series, limit=10)
+                        if mkts is None or mkts.empty:
+                            continue
+                        print(f"  {mname:4s} ({series:11s}): {len(mkts)} markets (info_only — no ML model)")
+                        for _, r in mkts.iterrows():
+                            title = r.get("title", "")
+                            yb_v = r.get("yes_bid_dollars", 0)
+                            ya_v = r.get("yes_ask_dollars", 1)
+                            yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                            ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                            if yb <= 0 and ya >= 1.0:
+                                continue
+                            yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+                            lm = re.match(mt["pattern"], title, re.IGNORECASE)
+                            if not lm:
+                                continue
+                            pname = lm.group(1).strip()
+                            label = f"{pname} {desc}"
+                            all_bets.append({
+                                "type": mname, "ticker": r["ticker"],
+                                "side": "yes",
+                                "price_cents": max(1, int(yes_mid * 100)),
+                                "model_prob": 0.5,
+                                "market_prob": round(yes_mid, 4),
+                                "edge": 0.0,
+                                "contracts": 1,
+                                "player": pname,
+                                "team": "",
+                                "line_val": 0,
+                                "stat_desc": desc,
+                                "label": label,
+                            })
+                    except Exception:
+                        pass
+                    continue
+
+                mname = mt["name"]
+                series = mt["series_ticker"]
+                pattern = mt["pattern"]
+                model_name = mt["model_name"]
+                desc = mt["desc"]
+
+                # Try to fetch markets — if none exist (off-season), skip gracefully
+                try:
+                    mkts = kc.list_markets(series_ticker=series, limit=500)
+                    if mkts is None or mkts.empty:
+                        print(f"  {mname:4s} ({series:11s}): no markets (off-season?)")
+                        continue
+                except Exception:
+                    print(f"  {mname:4s} ({series:11s}): cannot reach Kalshi")
+                    continue
+
+                # Load model (cached per model_name)
+                if model_name not in nba_model_cache:
+                    m, s, feats, cal = _load_nba_regressor(model_name)
+                    if m is None:
+                        print(f"  {mname:4s}: no regressor for {model_name}")
+                        continue
+                    nba_model_cache[model_name] = (m, s, feats, cal)
+                reg_model, reg_std, true_features, beta_cal = nba_model_cache[model_name]
+
+                count = 0
+                for _, row in mkts.iterrows():
+                    try:
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0:
+                            continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+
+                        lm = re.match(pattern, title, re.IGNORECASE)
+                        if not lm:
+                            continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        if line_val <= 0:
+                            continue
+
+                        row_match = _match_nba_player(pname, nba_latest)
+                        if row_match is None:
+                            continue
+
+                        # Skip players with insufficient data
+                        avg_cols = [c for c in row_match.index
+                                    if c.endswith("_avg_3") and isinstance(row_match[c], (int, float))]
+                        if avg_cols and all(pd.isna(row_match[c]) for c in avg_cols):
+                            continue
+
+                        p_yes, mu = _p_ge_nba_line(
+                            row_match, reg_model, reg_std, line_val, true_features,
+                            stat_name=mname, beta_cal=beta_cal,
+                        )
+                        yes_edge = p_yes - yes_mid
+
+                        label = f"{pname} {line_val}+ {desc}"
+                        all_bets.append({
+                            "type": mname, "ticker": ticker,
+                            "side": "yes",
+                            "price_cents": max(1, int(yes_mid * 100)),
+                            "model_prob": round(p_yes, 4),
+                            "market_prob": round(yes_mid, 4),
+                            "edge": round(yes_edge, 4),
+                            "contracts": 1,
+                            "player": pname,
+                            "team": "",
+                            "line_val": line_val,
+                            "stat_desc": desc,
+                            "label": label,
+                        })
+                        count += 1
+                    except Exception:
+                        pass
+
+                print(f"  {mname:4s} ({series:11s}): {count} qualifying bets")
+                nba_bet_count += count
+        else:
+            print("  No feature data available (run data pipeline first)")
+    except Exception as e:
+        print(f"  NBA props error: {e}")
+
+    if nba_bet_count == 0:
+        print("  (NBA is off-season — no markets or no qualifying edges)")
+
+    # === 6. WNBA PLAYER PROPS (PTS, REB, AST, 3PT) ===
+    print()
+    print("  " + "-" * 66)
+    print("  6. WNBA PLAYER PROPS (PTS, REB, AST, 3PT — team-level models)")
+    print("  " + "-" * 66)
+    wnba_bet_count = 0
+    try:
+        from src.scripts.kalshi_wnba_unified import (
+            load_features as load_wnba_features,
+            MARKET_TYPES as WNBA_MARKET_TYPES,
+        )
+        wnba_latest = load_wnba_features()
+        if wnba_latest is not None and not wnba_latest.empty:
+            if "game_date" in wnba_latest.columns:
+                wnba_latest = wnba_latest.sort_values("game_date").groupby("player_id").last().reset_index()
+            print(f"  Loaded features for {len(wnba_latest)} teams", flush=True)
+
+            for mt in WNBA_MARKET_TYPES:
+                mname = mt["name"]
+                series = mt["series_ticker"]
+                pattern = mt["pattern"]
+                desc = mt["desc"]
+
+                try:
+                    mkts = kc.list_markets(series_ticker=series, limit=50)
+                    if mkts is None or mkts.empty:
+                        print(f"  {mname:4s} ({series:11s}): no markets (off-season?)")
+                        continue
+                except Exception:
+                    print(f"  {mname:4s} ({series:11s}): cannot reach Kalshi")
+                    continue
+
+                count = 0
+                for _, row in mkts.iterrows():
+                    try:
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0:
+                            continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+                        lm = re.match(pattern, title, re.IGNORECASE)
+                        if not lm:
+                            continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        label = f"WNBA-{pname} {line_val}+ {desc}"
+                        all_bets.append({
+                            "type": f"WNBA-{mname}", "ticker": ticker,
+                            "side": "yes",
+                            "price_cents": max(1, int(yes_mid * 100)),
+                            "model_prob": 0.5,
+                            "market_prob": round(yes_mid, 4),
+                            "edge": 0.0,
+                            "contracts": 1,
+                            "player": pname,
+                            "team": "",
+                            "line_val": line_val,
+                            "stat_desc": f"WNBA {desc}",
+                            "label": label,
+                        })
+                        count += 1
+                    except Exception:
+                        pass
+
+                print(f"  {mname:4s} ({series:11s}): {count} markets (info_only — team-level models)")
+                wnba_bet_count += count
+        else:
+            print("  No feature data available")
+    except Exception as e:
+        print(f"  WNBA props error: {e}")
+
+    if wnba_bet_count == 0:
+        print("  (WNBA is off-season — no markets or no qualifying edges)")
+
+    # === 7. NHL PLAYER PROPS (GOALS, ASSISTS, POINTS, SHOTS, PIM) ===
+    print()
+    print("  " + "-" * 66)
+    print("  7. NHL PLAYER PROPS (GOALS, ASSISTS, POINTS, SHOTS, PIM)")
+    print("  " + "-" * 66)
+    nhl_bet_count = 0
+    try:
+        from src.scripts.kalshi_nhl_unified import (
+            load_features as load_nhl_features,
+            MARKET_TYPES as NHL_MARKET_TYPES,
+        )
+        nhl_latest = load_nhl_features()
+        if nhl_latest is not None and not nhl_latest.empty:
+            if "game_date" in nhl_latest.columns:
+                nhl_latest = nhl_latest.sort_values("game_date").groupby("player_id").last().reset_index()
+            print(f"  Loaded {len(nhl_latest)} players", flush=True)
+
+            for mt in NHL_MARKET_TYPES:
+                mname = mt["name"]
+                series = mt["series_ticker"]
+                pattern = mt["pattern"]
+                desc = mt["desc"]
+
+                try:
+                    mkts = kc.list_markets(series_ticker=series, limit=50)
+                    if mkts is None or mkts.empty:
+                        print(f"  {mname:5s} ({series:11s}): no markets (off-season?)")
+                        continue
+                except Exception:
+                    print(f"  {mname:5s} ({series:11s}): cannot reach Kalshi")
+                    continue
+
+                count = 0
+                for _, row in mkts.iterrows():
+                    try:
+                        ticker = row["ticker"]
+                        title = row.get("title", "")
+                        yb_v = row.get("yes_bid_dollars", 0)
+                        ya_v = row.get("yes_ask_dollars", 1)
+                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+                        if yb <= 0 and ya >= 1.0:
+                            continue
+                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+                        lm = re.match(pattern, title, re.IGNORECASE)
+                        if not lm:
+                            continue
+                        pname = lm.group(1).strip()
+                        line_val = int(lm.group(2))
+                        label = f"NHL-{pname} {line_val}+ {desc}"
+                        all_bets.append({
+                            "type": f"NHL-{mname}", "ticker": ticker,
+                            "side": "yes",
+                            "price_cents": max(1, int(yes_mid * 100)),
+                            "model_prob": 0.5,
+                            "market_prob": round(yes_mid, 4),
+                            "edge": 0.0,
+                            "contracts": 1,
+                            "player": pname,
+                            "team": "",
+                            "line_val": line_val,
+                            "stat_desc": f"NHL {desc}",
+                            "label": label,
+                        })
+                        count += 1
+                    except Exception:
+                        pass
+
+                print(f"  {mname:5s} ({series:11s}): {count} markets (info_only — off-season)")
+                nhl_bet_count += count
+        else:
+            print("  No feature data available")
+    except Exception as e:
+        print(f"  NHL props error: {e}")
+
+    if nhl_bet_count == 0:
+        print("  (NHL is off-season — no markets or no qualifying edges)")
+
+    # === 8. Safe Compounder ===
+    print()
+    print("  " + "-" * 66)
+    print("  8. SAFE COMPOUNDER (NO-side on longshots)")
     print("  " + "-" * 66)
     try:
         from src.execution.kalshi_trader import KalshiTrader
@@ -312,16 +744,22 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  Compounder error: {e}")
 
-    # === 5. Multi-Leg Parlays (all MLB prop types + F5) ===
+    # === 9. Multi-Leg Parlays (all prop types + F5 + NFL + NBA + WNBA + NHL) ===
     print()
     print("  " + "-" * 66)
-    print("  5. MULTI-LEG PARLAYS (2/3/4-leg — all prop types + F5)")
+    print("  9. MULTI-LEG PARLAYS (2/3/4-leg — all prop types)")
     print("  " + "-" * 66)
+    PARLAY_ALLOWED_TYPES = {"KS", "HR", "TB", "HRR", "F5", "WC",
+                           "PASS_YDS", "PASS_TD", "RUSH_YDS", "REC", "REC_YDS", "TD",
+                           "PTS", "REB", "AST", "BLK", "STL", "3PT", "FTM",
+                           "PRA", "PA", "PR", "RA", "2D", "3D",
+                           "WNBA-PTS", "WNBA-REB", "WNBA-AST", "WNBA-3PT", "WNBA-TOTAL",
+                           "NHL-GOALS", "NHL-ASSISTS", "NHL-POINTS", "NHL-SHOTS", "NHL-PIM", "NHL-G+A"}
     parlay_opps = []
     for b in all_bets:
         bt = b["type"]
-        # Include MLB player props + F5 + WC; exclude COMP (safe compounder is a different strategy)
-        if bt not in ("KS", "HR", "TB", "HRR", "F5", "WC"):
+        # Include all prop types; exclude COMP (safe compounder is a different strategy)
+        if bt not in PARLAY_ALLOWED_TYPES:
             continue
         if b.get("price_cents", 50) < 1 or b.get("price_cents", 50) > 99:
             continue
@@ -330,6 +768,8 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
         parlay_opps.append({
             "ticker": b["ticker"],
             "title": b.get("label", ""),
+            "type": bt,
+            "stat_type": b.get("stat_desc", bt),
             "market_prob": b.get("market_prob", 0.5),
             "model_prob": b.get("model_prob", 0.5),
             "edge": b.get("edge", 0),
@@ -342,7 +782,7 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     else:
         print(f"  Need 2+ edges (have {len(parlay_opps)})")
 
-    # === 6. TOP PLAYS Leaderboard ===
+    # === 10. TOP PLAYS Leaderboard ===
     print()
     print("=" * 70)
     print("  * TOP PLAYS FOR TODAY - Ranked by Edge")
@@ -395,11 +835,11 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     else:
         print("  No qualifying plays found")
 
-    # === 7. Place Orders ===
+    # === 11. Place Orders ===
     if auto_bet and all_bets:
         print()
         print("=" * 70)
-        print("  6. PLACING ORDERS (--bet mode)")
+        print("  11. PLACING SINGLE ORDERS (--bet mode)")
         print("=" * 70)
         top_plays = sorted(all_bets, key=lambda x: -x.get("edge", 0))
         placed = 0
@@ -436,10 +876,96 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                 placed += 1
                 total_exposure += cost
                 time.sleep(2)
-        print(f"  Placed {placed} orders | Exposure: ${total_exposure:.2f} | Balance: ${kc.get_balance():.2f}")
+        print(f"  Placed {placed} single orders | Exposure: ${total_exposure:.2f} | Balance: ${kc.get_balance():.2f}")
+
+        # === 11b. Place Parlay Orders ===
+        parlay_placed = 0
+        total_parlay_exposure = 0.0
+        print()
+        print("=" * 70)
+        print("  11b. PLACING PARLAY ORDERS (--bet mode, if parlays found)")
+        print("=" * 70)
+        try:
+            parlay_bets = []
+            for b in all_bets:
+                bt = b["type"]
+                if bt not in ("KS", "HR", "TB", "HRR", "F5"):
+                    continue
+                if b.get("price_cents", 50) < 1 or b.get("price_cents", 50) > 99:
+                    continue
+                if b.get("edge", 0) < min_edge:
+                    continue
+                parlay_bets.append({
+                    "ticker": b["ticker"],
+                    "title": b.get("label", ""),
+                    "type": bt,
+                    "stat_type": b.get("stat_desc", bt),
+                    "market_prob": b.get("market_prob", 0.5),
+                    "model_prob": b.get("model_prob", 0.5),
+                    "edge": b.get("edge", 0),
+                    "price_cents": b.get("price_cents", 50),
+                })
+            if len(parlay_bets) >= 2:
+                finder = KalshiParlayFinder(min_edge=min_edge, kc=kc)
+                parlay_results = finder.find_best(parlay_bets, top_n=3)
+                for n_legs in sorted(parlay_results.keys()):
+                    for parlay in parlay_results[n_legs][:2]:
+                        if total_exposure + total_parlay_exposure >= balance * max_exposure_pct:
+                            break
+                        # Stake = parlay Kelly of remaining bankroll
+                        remaining = balance - total_exposure - total_parlay_exposure
+                        stake_pct = parlay.kelly_fraction
+                        total_stake = remaining * stake_pct
+                        stake_per_leg = total_stake / max(len(parlay.legs), 1)
+                        print(f"\n  Parlay {n_legs}-leg (EV={parlay.expected_value:+.1%}, ρ̅={parlay.implied_correlation:.0%}, stake=${total_stake:.2f}):")
+                        for leg in parlay.legs:
+                            price = leg.price_cents / 100.0
+                            if price <= 0 or price >= 1:
+                                continue
+                            contracts = max(1, int(stake_per_leg / max(price, 0.001)))
+                            cost = contracts * price
+                            if place_with_verify(kc, leg.ticker, "yes", leg.price_cents, contracts, leg.model_prob):
+                                parlay_placed += 1
+                                total_parlay_exposure += cost
+                                time.sleep(2)
+                            seen_orders.add(leg.ticker)
+                print(f"  Placed {parlay_placed} parlay legs | Exposure: ${total_parlay_exposure:.2f}")
+            else:
+                print("  Need 2+ edges for parlays, skipping")
+        except Exception as e:
+            print(f"  Parlay betting error: {e}")
+
+        total_orders = placed + parlay_placed
+        total_exp = total_exposure + total_parlay_exposure
+        print(f"\n  Total: {total_orders} orders | Total exposure: ${total_exp:.2f} | Balance: ${kc.get_balance():.2f}")
+    elif auto_bet and not all_bets:
+        print()
+        print("  No qualifying bets found — nothing to place")
     elif not auto_bet:
         print()
         print("  DRY RUN - no orders placed (use --bet to enable)")
+
+    # === 12. Log to Trade Tracker (paper or live) ===
+    if all_bets:
+        paper_mode = "--paper" in sys.argv
+        tt = TradeTracker()
+        for b in all_bets:
+            tt.log_trade(
+                sport="mlb",
+                model_name=b.get("type", "unknown"),
+                ticker=b.get("ticker", ""),
+                title=b.get("label", ""),
+                side=b.get("side", "yes"),
+                price_cents=b.get("price_cents", 50),
+                size=b.get("contracts", 1),
+                model_prob=b.get("model_prob", 0.5),
+                market_prob=b.get("market_prob", 0.5),
+                edge=b.get("edge", 0),
+                live=not paper_mode,
+                notes="paper_trade" if paper_mode else ("live_bet" if auto_bet else "dry_run"),
+            )
+        mode_label = "PAPER" if paper_mode else ("LIVE" if auto_bet else "DRY")
+        print(f"  Logged {len(all_bets)} trades to tracker ({mode_label})")
 
     print()
     print("=" * 70)
