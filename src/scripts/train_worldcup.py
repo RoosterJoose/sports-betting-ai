@@ -238,7 +238,9 @@ def train_match_model():
                     "p_actual": float(class_actual[mask].mean()),
                     "n": int(mask.sum()),
                 })
-        cal_path = CALIB_DIR / f"wc_{cls_name}_empirical.json"
+        # File naming: "{cls_name}_empirical.json" so EmpiricalCalibrator
+        # can find it via calibrate("home", 0, p) lookup.
+        cal_path = CALIB_DIR / f"{cls_name}_empirical.json"
         with open(cal_path, "w") as f:
             json.dump({"0": {"bins": cal_table}}, f, indent=2)
         print(f"    Saved {cal_path.name} ({len(cal_table)} bins)")
@@ -259,9 +261,60 @@ def train_match_model():
                     "p_actual": float(class_actual[mask].mean()),
                     "n": int(mask.sum()),
                 })
-        cal_path = CALIB_DIR / f"wc_{cls_name}_val_empirical.json"
+        cal_path = CALIB_DIR / f"{cls_name}_val_empirical.json"
         with open(cal_path, "w") as f:
             json.dump({"0": {"bins": cal_table}}, f, indent=2)
+
+    # Fit NEUTRAL-VENUE Platt scaling from the 2022 WC validation set.
+    # Platt scaling = logistic regression on raw log-odds, learning the
+    # mapping from model probability → actual neutral-venue outcome rate.
+    # With only 57 matches, this parametric approach (2 params/class, 6 total)
+    # is statistically defensible vs bin-based calibration which overfits.
+    #
+    # For each class: calibrated = sigmoid(a + b * logit(raw_prob))
+    # where a,b are fit from 2022 WC val predictions vs actual outcomes.
+    # Edge case: 2022 WC had 0 away wins, so away Platt can't be fit.
+    # We skip fitting for classes with < 2 unique labels and fall back to
+    # raw probability (which the renormalization step handles naturally).
+    from sklearn.linear_model import LogisticRegression
+
+    neutral_dir = CALIB_DIR / "neutral"
+    neutral_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n  Fitting neutral-venue Platt scaling (2022 WC, {len(y_val)} matches)...")
+
+    platt_coeffs = {}
+    for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
+        class_preds = preds_val[:, cls_idx]
+        class_actual = (y_val == cls_idx).astype(int)
+
+        # If the class has no positive examples (e.g., 0 away wins in 2022 WC),
+        # Platt scaling can't be fit — skip and fall back to raw probability.
+        n_pos = int(class_actual.sum())
+        if n_pos < 2:
+            print(f"    {cls_name:6s}: skipping Platt ({n_pos} positive examples, need ≥2)")
+            continue
+
+        # Convert probability to log-odds for Platt input
+        # Clamp away from 0/1 to avoid infinite log-odds
+        eps = 1e-6
+        p_clipped = np.clip(class_preds, eps, 1 - eps)
+        log_odds = np.log(p_clipped / (1 - p_clipped)).reshape(-1, 1)
+
+        # Fit logistic regression: actual ~ logit(pred)
+        platt = LogisticRegression(penalty=None, solver="lbfgs", max_iter=1000)
+        platt.fit(log_odds, class_actual)
+
+        a = float(platt.intercept_[0])
+        b = float(platt.coef_[0][0])
+        platt_coeffs[cls_name] = {"intercept": a, "slope": b}
+
+        print(f"    {cls_name:6s}: calibrated = σ({a:+.4f} + {b:.3f}·logit(p))  "
+              f"act={float(class_actual.mean()):.1%} vs pred={float(class_preds.mean()):.1%}")
+
+    platt_path = neutral_dir / "platt.json"
+    with open(platt_path, "w") as f:
+        json.dump(platt_coeffs, f, indent=2)
+    print(f"    Saved {platt_path}")
 
     # 12. Save model + metadata
     print("\n7. Saving model...")

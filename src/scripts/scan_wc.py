@@ -10,7 +10,6 @@ from src.data.kalshi import KalshiClient
 from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_teams,
                                   get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO,
                                   build_feature_vector)
-from src.models.calibrator import EmpiricalCalibrator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = PROJECT_ROOT / "models" / "worldcup"
@@ -19,17 +18,17 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 # Trained ML model cache
 _loaded_model = None
 _loaded_meta = None
-_calibrator = None
+_platt_coeffs = None  # Platt scaling coefficients for neutral-venue adjustment
 
 def _load_match_model():
     """Load trained match outcome model. Returns (model, meta) or (None, None)."""
-    global _loaded_model, _loaded_meta, _calibrator
+    global _loaded_model, _loaded_meta, _platt_coeffs
     if _loaded_model is not None:
         return _loaded_model, _loaded_meta
     
     model_path = MODEL_DIR / "wc_match_outcome.txt"
     meta_path = MODEL_DIR / "wc_match_outcome.meta.json"
-    cal_path = MODEL_DIR / "calibration"
+    platt_path = MODEL_DIR / "calibration" / "neutral" / "platt.json"
     
     if not model_path.exists() or not meta_path.exists():
         return None, None
@@ -39,8 +38,10 @@ def _load_match_model():
         _loaded_model = lgb.Booster(model_file=str(model_path))
         with open(meta_path) as f:
             _loaded_meta = json.load(f)
-        if cal_path.exists():
-            _calibrator = EmpiricalCalibrator(cal_path)
+        # Load Platt scaling coefficients for neutral-venue adjustment
+        if platt_path.exists():
+            with open(platt_path) as f:
+                _platt_coeffs = json.load(f)
         return _loaded_model, _loaded_meta
     except Exception:
         return None, None
@@ -191,13 +192,63 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None):
             x = build_feature_vector(elo_h, elo_a, hf, af, "WC", features)
             probs = model.predict(x)[0]
             
-            # Apply empirical calibration if available
-            if _calibrator is not None:
+            # ── Neutral-venue calibration (two layers) ──────────────────
+            #
+            # Layer 1: Platt scaling — improves general probability calibration
+            # by fitting sigmoid(a + b·logit(p)) per class from 2022 WC outcomes.
+            if _platt_coeffs is not None:
+                eps = 1e-6
+                calibrated = np.zeros(3)
                 for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
-                    cal_p = _calibrator.calibrate(cls_name, 0, probs[cls_idx])
-                    if cal_p != probs[cls_idx]:
-                        probs[cls_idx] = cal_p
+                    coeffs = _platt_coeffs.get(cls_name)
+                    if coeffs:
+                        a = coeffs["intercept"]
+                        b = coeffs["slope"]
+                        p = np.clip(probs[cls_idx], eps, 1 - eps)
+                        logit = np.log(p / (1 - p))
+                        calibrated[cls_idx] = 1.0 / (1.0 + np.exp(-(a + b * logit)))
+                    else:
+                        calibrated[cls_idx] = probs[cls_idx]
+                probs = calibrated
+
+            # Layer 2: Elo-diff-aware home-advantage correction.
+            # The model's is_neutral feature is a weak signal (only ~9% of
+            # training data). At true neutral venues, ~100 Elo points of
+            # home-field advantage should be removed. We compute the model's
+            # home premium over Elo-expected and retain only 30% of it
+            # (the "listed-first" advantage from seeding/coin-flip).
+            #
+            # NOTE: NEUTRAL_HA_RETENTION = 0.30 is a domain-knowledge
+            # parameter, not data-calibrated. Neutral-venue data shows 83%
+            # home win rate (seeded teams listed first), but this conflates
+            # seed quality with home advantage. At true neutral venues with
+            # random home assignment, we'd expect ~0% retention. 30% is a
+            # conservative estimate for the listed-first effect.
+            elo_expected_home = elo_expected(elo_h, elo_a)
+            model_premium = probs[0] - elo_expected_home
+            NEUTRAL_HA_RETENTION = 0.30
+            neutral_premium = model_premium * NEUTRAL_HA_RETENTION
+            p_home_corrected = elo_expected_home + neutral_premium
+
+            # Redistribute mass from/to draw and away proportionally.
+            # When reducing home, excess goes to draw+away. When increasing
+            # home, mass is taken from draw+away. If there's no draw/away
+            # mass to redistribute (both 0), split the delta evenly.
+            home_delta = p_home_corrected - probs[0]
+            if home_delta != 0:
+                if (probs[1] + probs[2]) > 0:
+                    draw_share = probs[1] / (probs[1] + probs[2])
+                    probs[1] -= home_delta * draw_share
+                    probs[2] -= home_delta * (1 - draw_share)
+                else:
+                    # No draw/away mass — split delta evenly
+                    probs[1] -= home_delta * 0.5
+                    probs[2] -= home_delta * 0.5
+            probs[0] = p_home_corrected
             
+            # Ensure non-negative
+            probs = np.maximum(probs, 0)
+
             # Renormalize to sum to 1
             probs = probs / probs.sum()
             return probs
