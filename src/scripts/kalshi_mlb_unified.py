@@ -85,7 +85,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*home\s*runs?\??$",
         "desc": "home runs",
-        "info_only": False,
+        "info_only": True,
     },
     {
         "name": "TB",
@@ -94,7 +94,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*total\s*bases?\??$",
         "desc": "total bases",
-        "info_only": False,
+        "info_only": True,
     },
     {
         "name": "HRR",
@@ -103,7 +103,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits\s*\+\s*runs\s*\+\s*RBIs?\??$",
         "desc": "hits+runs+RBIs",
-        "info_only": False,
+        "info_only": True,
     },
     # New market types (no active markets as of June 2026 — patterns inferred)
     {
@@ -113,8 +113,8 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*outs?\??$",
         "desc": "pitching outs",
-        "info_only": False,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": True,
+        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
     },
     {
         "name": "ER",
@@ -123,8 +123,8 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*earned\s*runs?\??$",
         "desc": "earned runs allowed",
-        "info_only": False,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": True,
+        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
     },
     {
         "name": "H",
@@ -133,8 +133,8 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits?\??$",
         "desc": "hits allowed",
-        "info_only": False,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": True,
+        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
     },
     {
         "name": "BB",
@@ -143,8 +143,8 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*walks?\??$",
         "desc": "walks allowed",
-        "info_only": False,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": True,
+        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
     },
     {
         "name": "R",
@@ -163,8 +163,8 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*RBIs?\??$",
         "desc": "RBIs",
-        "info_only": False,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": True,
+        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
     },
     {
         "name": "SB",
@@ -299,7 +299,12 @@ def _get_recency_df():
 
 
 def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tuple[float, float, bool]:
-    """Compare model prediction to actual 2026 rate for a player.
+    """Compare model prediction to actual rate for a player.
+
+    Uses 2026 data first (prefer ≥3 games for stability), falls back to
+    2025, then 2024 if 2026 sample is too small. This prevents the live
+    scanner from overreacting to 1-game extremes (0% or 100%) while still
+    providing ground truth rates for backtesting.
 
     stat_col: which stat to check ("so", "hr", "tb", "h_r_rbi", "ip", "h", "bb",
                "er", "r", "rbi", "sb").
@@ -320,9 +325,12 @@ def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tup
         else:
             combined = df["position"] != "P"
 
-        player_games = df[(df["player_name"].str.contains(player_name, case=False, na=False))
-                          & (df["season"] == "2026")
-                          & combined]
+        # Tiered fallback: 2026 ≥3 → 2025 → 2024 → give up
+        player_name_mask = df["player_name"].str.contains(player_name, case=False, na=False)
+        for season in ["2026", "2025", "2024"]:
+            player_games = df[player_name_mask & (df["season"] == season) & combined]
+            if len(player_games) >= 3:
+                break
         if len(player_games) < 3:
             return -1, -1, True
 
@@ -486,7 +494,8 @@ def main():
 
                 p_yes, mu = _p_ge_line(row, reg_model, reg_std, line_val, stat_name=model_name)
 
-                # Check recency: if player's actual 2026 rate differs from model, use the higher rate (more conservative edge)
+                # Check recency: if player's actual rate (2024-2026, pref ≥3 games) differs from model,
+                # use the more conservative rate (min = lower edge for YES betting)
                 recency_rate, _, _ = _recency_check(player_name, line_val, stat_col=model_name.lower())
                 recency_used = ""
                 if recency_rate >= 0:
