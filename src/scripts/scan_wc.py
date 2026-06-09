@@ -186,8 +186,9 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None):
             af = form_features.get(away_team, {"perf": 0, "opp_elo": elo_a, "gs": 0, "gc": 0, "n": 0})
             
             # Build feature vector via shared utility (matches training data order)
+            # Pass "WC" so is_neutral=1 — World Cup matches are at neutral venues
             features = meta.get("features", [])
-            x = build_feature_vector(elo_h, elo_a, hf, af, None, features)
+            x = build_feature_vector(elo_h, elo_a, hf, af, "WC", features)
             probs = model.predict(x)[0]
             
             # Apply empirical calibration if available

@@ -218,6 +218,24 @@ WC2026_TEAMS = [
     "Korea DPR", "Bosnia and Herzegovina",
 ]
 
+# Tournament codes for neutral-venue finals (no home advantage).
+# Excludes qualifiers (Q suffix), friendlies (F), and domestic leagues.
+NEUTRAL_TOURNAMENTS = {
+    "WC",   # World Cup finals
+    "EC",   # European Championship finals
+    "AC",   # Asian Cup / Copa América / AFCON finals
+    "CC",   # Confederations Cup
+    "CCH",  # Club World Cup / Championship
+    "CEC",  # Confederation championship
+    "CCC",  # Concacaf / confederation cup
+    "BGC",  # Beach / youth games
+    "PCC",  # Pan-continental cup
+    "NGC",  # Nations championship
+    "LGC",  # League/continental cup
+    "GCC",  # Gulf Cup
+    "VWC",  # Veterans / variant world cup
+}
+
 def _elo_expected(team_elo, opp_elo):
     """Elo expected win probability: 1/(1+10^((opp_elo - team_elo)/400))."""
     return 1.0 / (1.0 + 10.0 ** ((opp_elo - team_elo) / 400.0))
@@ -281,6 +299,9 @@ def build_feature_dataset(elo_df):
 
         hw, aw, d_ = (1, 0, 0) if hs > as_ else ((0, 1, 0) if as_ > hs else (0, 0, 1))
 
+        # Neutral-venue flag: major finals tournaments have no home advantage
+        is_neutral = int(row.get("tournament_code", "") in NEUTRAL_TOURNAMENTS)
+
         records.append({
             "match_date": date,
             "home_team": home, "away_team": away,
@@ -290,6 +311,7 @@ def build_feature_dataset(elo_df):
             "elo_diff": elo_h - elo_a,
             "h_perf": h_perf, "h_opp_elo": h_opp_elo, "h_gs": hgs, "h_gc": hgc, "h_n": hn,
             "a_perf": a_perf, "a_opp_elo": a_opp_elo, "a_gs": ags, "a_gc": agc, "a_n": an,
+            "is_neutral": is_neutral,
             "home_won": hw, "draw": d_, "away_won": aw,
         })
 
@@ -365,6 +387,8 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
     elo_diff = elo_home - elo_away
     tc = str(tournament_code or "").upper()
     is_friendly = 1 if "FR" in tc else 0
+    # Matches the same NEUTRAL_TOURNAMENTS set used in build_feature_dataset()
+    is_neutral = 1 if tc in NEUTRAL_TOURNAMENTS else 0
 
     vec = {}
     for c in features:
@@ -386,6 +410,8 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
             vec[c] = af.get("gs", 0) - af.get("gc", 0)
         elif c == "is_friendly":
             vec[c] = is_friendly
+        elif c == "is_neutral":
+            vec[c] = is_neutral
         else:
             # Backward compat: old models may have h_wr, h_dr, etc.
             if c in ("h_wr", "h_dr"):
