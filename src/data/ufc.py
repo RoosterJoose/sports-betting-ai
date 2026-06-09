@@ -179,86 +179,131 @@ class UFCDataSource(DataSource):
 
     def fetch_player_game_logs(self, seasons: list[str]) -> pd.DataFrame:
         """Split each fight into two per-fighter rows.
-        Red corner and blue corner each get their own row with their stats as targets.
+        Red corner and blue corner each get their own row with comprehensive
+        per-fighter stats, opponent stats, and fight-level metadata.
+
+        Returns a DataFrame where each row represents ONE fighter's perspective:
+        - Raw CSV columns preserved (r_*, b_*) for backward compatibility
+        - fighter_* / opponent_* normalized columns for rolling features
+        - All physical, career, streak, accuracy, stance, and odds data
         """
         df = self._load_csv()
         if df.empty:
             return df
 
-        # Per-fighter columns to create
-        fighter_cols = {
-            "avg_sig_str_landed": "significant_strikes",
-            "avg_td_landed": "takedowns",
-            "avg_sub_att": None,  # not in config but useful
-        }
+        # Identify all r_ and b_ prefixed columns (fighter-specific stats)
+        r_prefix_cols = sorted([c for c in df.columns if c.startswith("r_") and c != "r_fighter"])
+        b_prefix_cols = sorted([c for c in df.columns if c.startswith("b_") and c != "b_fighter"])
 
-        red_rows = []
-        blue_rows = []
-        
-        for _, row in df.iterrows():
-            r_fighter = str(row.get("r_fighter", ""))
-            b_fighter = str(row.get("b_fighter", ""))
-            if not r_fighter or not b_fighter:
+        # Common fight-level columns to include
+        fight_cols = ["weight_class", "no_of_rounds", "finish_round",
+                      "total_fight_time_secs", "winner", "title_bout",
+                      "gender", "finish", "finish_details", "finish_round_time",
+                      "date", "location", "country", "empty_arena", "better_rank"]
+
+        rows = []
+        for _, fight in df.iterrows():
+            r_fighter = str(fight.get("r_fighter", "")).strip()
+            b_fighter = str(fight.get("b_fighter", "")).strip()
+            if not r_fighter or not b_fighter or r_fighter == "nan" or b_fighter == "nan":
                 continue
-            
-            # Common fight-level values
-            finish_round = row.get("finish_round", 3)
-            fight_time = row.get("total_fight_time_secs", 900)
-            no_of_rounds = row.get("no_of_rounds", 3)
-            weight_class = row.get("weight_class", "")
-            game_date = row.get("date", row.get("_date", None))
-            
-            # Red corner row
-            red_row = {
-                "player_id": r_fighter,
-                "opponent": b_fighter,
-                "weight_class": weight_class,
-                "no_of_rounds": no_of_rounds,
-                "finish_round": finish_round,
-                "total_fight_time_secs": fight_time,
-                "game_date": game_date,
-                "season": str(pd.to_datetime(game_date).year) if pd.notna(game_date) else "2025",
-                "is_red": 1,
-                "winner": ("Red" if str(row.get("winner", "") or "").strip().lower() == "red" else "Blue"),
-                "significant_strikes": row.get("r_avg_sig_str_landed", 0),
-                "takedowns": row.get("r_avg_td_landed", 0),
-                "knockdown_win": finish_round,  # finish_round as proxy
-                "fight_minutes": fight_time / 60.0,
-                # Opponent features
-                "opponent_significant_strikes": row.get("b_avg_sig_str_landed", 0),
-                "opponent_takedowns": row.get("b_avg_td_landed", 0),
-            }
-            red_rows.append(red_row)
-            
-            # Blue corner row
-            blue_row = {
-                "player_id": b_fighter,
-                "opponent": r_fighter,
-                "weight_class": weight_class,
-                "no_of_rounds": no_of_rounds,
-                "finish_round": finish_round,
-                "total_fight_time_secs": fight_time,
-                "game_date": game_date,
-                "season": str(pd.to_datetime(game_date).year) if pd.notna(game_date) else "2025",
-                "is_red": 0,
-                "winner": ("Red" if str(row.get("winner", "") or "").strip().lower() == "red" else "Blue"),
-                "significant_strikes": row.get("b_avg_sig_str_landed", 0),
-                "takedowns": row.get("b_avg_td_landed", 0),
-                "knockdown_win": finish_round,
-                "fight_minutes": fight_time / 60.0,
-                "opponent_significant_strikes": row.get("r_avg_sig_str_landed", 0),
-                "opponent_takedowns": row.get("r_avg_td_landed", 0),
-            }
-            blue_rows.append(blue_row)
-        
-        result = pd.DataFrame(red_rows + blue_rows)
-        
+
+            game_date = fight.get("date", fight.get("_date", None))
+            season_year = str(pd.to_datetime(game_date).year) if pd.notna(game_date) else "2025"
+            fight_time_secs = float(fight.get("total_fight_time_secs", 900) or 900)
+            fin_round = float(fight.get("finish_round", 3) or 3)
+            winner = str(fight.get("winner", "") or "").strip().lower()
+
+            # ── Build rows for both corners ──────────────────────────
+            for corner, self_prefix, opp_prefix, self_label, opp_label in [
+                ("red", "r_", "b_", r_fighter, b_fighter),
+                ("blue", "b_", "r_", b_fighter, r_fighter),
+            ]:
+                row_data = {
+                    # Identifiers
+                    "player_id": self_label,
+                    "opponent": opp_label,
+                    "is_red": 1 if corner == "red" else 0,
+                    "game_date": game_date,
+                    "season": season_year,
+                }
+
+                # Fight-level columns
+                for col in fight_cols:
+                    if col in fight.index:
+                        row_data[col] = fight[col]
+
+                # Raw CSV columns preserved for backward compat
+                for src_prefix in ["r_", "b_"]:
+                    cols_list = r_prefix_cols if src_prefix == "r_" else b_prefix_cols
+                    for col in cols_list:
+                        raw_name = src_prefix + col[2:]  # r_avg_sig_str_landed
+                        if raw_name in fight.index:
+                            row_data[raw_name] = fight[raw_name]
+
+                # Normalized fighter_* / opponent_* columns for rolling features
+                self_src_cols = r_prefix_cols if self_prefix == "r_" else b_prefix_cols
+                opp_src_cols = b_prefix_cols if self_prefix == "r_" else r_prefix_cols
+
+                for col in self_src_cols:
+                    raw_name = self_prefix + col[2:]
+                    if raw_name in fight.index:
+                        # fighter_avg_sig_str_landed
+                        fighter_col = "fighter_" + col[2:]
+                        row_data[fighter_col] = fight[raw_name]
+
+                for col in opp_src_cols:
+                    raw_name = opp_prefix + col[2:]
+                    if raw_name in fight.index:
+                        opp_col = "opponent_" + col[2:]
+                        row_data[opp_col] = fight[raw_name]
+
+                # Computed fight-level stats
+                row_data["significant_strikes"] = row_data.get(
+                    f"fighter_avg_sig_str_landed",
+                    row_data.get(f"{self_prefix}avg_sig_str_landed", 0)
+                )
+                row_data["takedowns"] = row_data.get(
+                    f"fighter_avg_td_landed",
+                    row_data.get(f"{self_prefix}avg_td_landed", 0)
+                )
+                row_data["fight_minutes"] = fight_time_secs / 60.0
+                row_data["total_fight_time_secs"] = fight_time_secs
+                row_data["finish_round"] = fin_round
+
+                # Winner encoding
+                if corner == "red":
+                    row_data["win"] = 1 if winner == "red" else 0
+                else:
+                    row_data["win"] = 1 if winner == "blue" else 0
+
+                # Finish type encoding
+                finish_type = str(fight.get("finish", "") or "").upper()
+                row_data["is_ko"] = 1 if "KO" in finish_type or "TKO" in finish_type else 0
+                row_data["is_sub"] = 1 if "SUB" in finish_type else 0
+                row_data["is_dec"] = 1 if "DEC" in finish_type or "U-DEC" in finish_type or "S-DEC" in finish_type or "M-DEC" in finish_type else 0
+
+                rows.append(row_data)
+
+        result = pd.DataFrame(rows)
+
         # Sort by player, then date
         if "game_date" in result.columns:
             result["game_date"] = pd.to_datetime(result["game_date"], errors="coerce")
             result = result.sort_values(["player_id", "game_date"]).reset_index(drop=True)
-        
-        print(f"  UFC: {len(result)} fighter-game rows from {len(df)} fights, {result['player_id'].nunique()} fighters")
+
+        # Convert numeric columns — keep datetimes as-is
+        date_cols = {"game_date", "date"}
+        for c in result.columns:
+            if c in ("player_id", "opponent", "winner", "weight_class", "gender",
+                     "finish", "finish_details", "location", "country", "season"):
+                continue
+            if c in date_cols:
+                continue
+            result[c] = pd.to_numeric(result[c], errors="coerce").fillna(0)
+
+        print(f"  UFC: {len(result)} fighter-game rows from {len(df)} fights, "
+              f"{result['player_id'].nunique()} fighters, {len(result.columns)} columns")
         return result
     def _find_columns(self, df: pd.DataFrame, needed: list[str]) -> dict:
         mapping = {}

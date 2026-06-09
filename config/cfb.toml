@@ -1,0 +1,16 @@
+[sport]
+name = "cfb"
+display_name = "College Football"
+
+[stat_types]
+single = ["points_for", "points_against", "total_yards", "passing_yards", "rushing_yards",
+          "first_downs", "turnovers", "penalty_yards", "sacks", "tackles_for_loss",
+          "third_down_eff", "fourth_down_eff", "possession_seconds"]
+combined = ["total_points", "spread_margin"]
+
+[features]
+rolling_windows = [4, 8, 12]
+season_lookback = 5
+min_games_for_features = 4
+opponent_adjusted = true
+recency_decay = 0.001

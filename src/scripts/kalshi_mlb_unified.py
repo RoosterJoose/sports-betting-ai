@@ -113,7 +113,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*outs?\??$",
         "desc": "pitching outs",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -123,7 +123,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*earned\s*runs?\??$",
         "desc": "earned runs allowed",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -133,7 +133,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits?\??$",
         "desc": "hits allowed",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -143,7 +143,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*walks?\??$",
         "desc": "walks allowed",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -153,7 +153,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*runs?\??$",
         "desc": "runs",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -163,7 +163,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*RBIs?\??$",
         "desc": "RBIs",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -173,7 +173,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*stolen\s*bases?\??$",
         "desc": "stolen bases",
-        "info_only": True,
+        "info_only": False,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
 ]
@@ -262,7 +262,7 @@ def _p_ge_line(row, model, residual_std, line_val, stat_name=None):
         bins = cal.calibration.get(stat_key, {}).get(line_key, {}).get("bins", [])
         if len(bins) > 1:  # multi-bin = properly calibrated
             p_cal = cal.calibrate(stat_key, line_val, p_raw)
-            p_cal = min(0.75, max(0.001, float(p_cal)))
+            p_cal = min(0.999, max(0.001, float(p_cal)))
             return p_cal, float(mu)
         # Single bin = old format (flat per-line rate) — fall through
 
@@ -271,13 +271,13 @@ def _p_ge_line(row, model, residual_std, line_val, stat_name=None):
         beta_cal = _get_beta_cal(stat_name)
         if beta_cal is not None and beta_cal._fitted:
             p_cor = beta_cal(p_raw)
-            p_cor = min(0.75, max(0.001, float(p_cor)))
+            p_cor = min(0.999, max(0.001, float(p_cor)))
             return p_cor, float(mu)
 
     # ── Step 3: Wang Transform (fallback) ──────────────────────────────────
     z = _norm.ppf(p_raw)
     p_corrected = _norm.cdf(z - WANG_LAMBDA)
-    p_corrected = min(0.75, max(0.001, float(p_corrected)))
+    p_corrected = min(0.999, max(0.001, float(p_corrected)))
     return p_corrected, float(mu)
 
 # Module-level cache for recency check data
@@ -301,30 +301,32 @@ def _get_recency_df():
 def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tuple[float, float, bool]:
     """Compare model prediction to actual 2026 rate for a player.
 
-    stat_col: which stat to check ("so", "hr", "tb", or "h_r_rbi")
-    For hitter stats (hr, tb, h_r_rbi), uses position != "P" instead of gs==1.
+    stat_col: which stat to check ("so", "hr", "tb", "h_r_rbi", "ip", "h", "bb",
+               "er", "r", "rbi", "sb").
     Returns (actual_rate, -1, True) where actual_rate=-1 means insufficient data.
     """
     try:
         df = _get_recency_df()
         if df is None:
             return -1, -1, True
+
+        # Pitcher stats: filter by position=="P" and gs==1 (starts only)
+        # Hitter stats: filter by position!="P"
+        pitcher_stats = {"so", "ip", "h", "bb", "er"}
+        is_pitcher_stat = stat_col in pitcher_stats
         
-        # Determine filter: pitchers use gs==1, hitters filter by position
-        if stat_col == "so":
-            game_filter = df["gs"] == 1
-            pos_filter = df["position"] == "P"
-            combined = game_filter & pos_filter
+        if is_pitcher_stat:
+            combined = (df["gs"] == 1) & (df["position"] == "P")
         else:
-            # For hitters, don't filter by gs, just by non-P position
             combined = df["position"] != "P"
-        
+
         player_games = df[(df["player_name"].str.contains(player_name, case=False, na=False))
                           & (df["season"] == "2026")
                           & combined]
         if len(player_games) < 3:
             return -1, -1, True
-        
+
+        # Generic stat rate computation
         if stat_col == "so":
             actual_rate = (player_games["so"] >= line_val).mean()
         elif stat_col == "hr":
@@ -335,6 +337,12 @@ def _recency_check(player_name: str, line_val: int, stat_col: str = "so") -> tup
         elif stat_col == "h_r_rbi":
             hrr = player_games["h"] + player_games["r"] + player_games["rbi"]
             actual_rate = (hrr >= line_val).mean()
+        elif stat_col in ("ip", "h", "bb", "er", "r", "rbi", "sb"):
+            # Generic: use the column directly
+            if stat_col in player_games.columns:
+                actual_rate = (player_games[stat_col] >= line_val).mean()
+            else:
+                actual_rate = -1
         else:
             actual_rate = -1
         return float(actual_rate), -1, True

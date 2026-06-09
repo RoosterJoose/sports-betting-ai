@@ -27,9 +27,9 @@ NB_STATS: set[str] = {
     "RUSH+REC_YDS", "PASS_YDS+TD",
     # NBA volume
     "PTS", "REB", "AST", "MIN", "FGA", "FGM", "FTA", "FTM", "FG3A", "FG3M",
-    "PR", "PA", "RA", "PRA",
+    "PR", "PA", "RA", "PRA", "SB", "FPTS",
     # MLB count stats (volume counts, overdispersed from starter-pull logic)
-    "SO", "K", "TB", "H", "ER", "BB", "R", "RBI", "H_R_RBI",
+    "SO", "K", "TB", "H", "ER", "BB", "R", "RBI", "H_R_RBI", "IP", "OUTS",
 }
 
 # Rare-event stats → Poisson (low count, zero-inflated)

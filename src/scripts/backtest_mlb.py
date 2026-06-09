@@ -31,6 +31,13 @@ STAT_DEFS = [
     ("HR",      "hr",   "hitter",  None),
     ("TB",      "tb",   "hitter",  None),
     ("H_R_RBI", None,   "hitter",  lambda df: df["h"] + df["r"] + df["rbi"]),
+    ("IP",      "ip",   "pitcher", None),
+    ("H",       "h",    "pitcher", None),
+    ("BB",      "bb",   "pitcher", None),
+    ("ER",      "er",   "pitcher", None),
+    ("R",       "r",    "hitter",  None),
+    ("RBI",     "rbi",  "hitter",  None),
+    ("SB",      "sb",   "hitter",  None),
 ]
 
 

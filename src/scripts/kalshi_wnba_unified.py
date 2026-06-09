@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Unified Kalshi WNBA bettor — covers WNBA player prop markets.
 
-NOTE: WNBA models were trained on TEAM-level data (LeagueGameFinder) not
-player-level data. All market types are info_only=True until the data
-pipeline is updated to use player-level game logs.
+Now using player-level data (PlayerGameLogs API, 11,615 rows across 3 seasons).
+Models retrained June 8, 2026 with R² 0.21-0.53.
 
 Market types:
   KXWNBAPTS  → points
@@ -36,74 +35,24 @@ import toml
 MODEL_DIR = PROJECT_ROOT / "models" / "wnba"
 WANG_LAMBDA = 0.25
 
-# Market type configuration
-# All models are info_only=True because WNBA models were trained on team-level data
-# (no player_name column), so player name matching will always fail.
+# Market type configuration (player-level models now available)
 MARKET_TYPES = [
-    {
-        "name": "PTS",
-        "model_name": "PTS",
-        "series_ticker": "KXWNBAPTS",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*points\??$",
-        "desc": "points",
-        "info_only": True,
-    },
-    {
-        "name": "REB",
-        "model_name": "REB",
-        "series_ticker": "KXWNBAREB",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*rebounds?\??$",
-        "desc": "rebounds",
-        "info_only": True,
-    },
-    {
-        "name": "AST",
-        "model_name": "AST",
-        "series_ticker": "KXWNBAAST",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*assists?\??$",
-        "desc": "assists",
-        "info_only": True,
-    },
-    {
-        "name": "3PT",
-        "model_name": "FG3M",
-        "series_ticker": "KXWNBA3PT",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*threes?\??$",
-        "desc": "three-pointers",
-        "info_only": True,
-    },
-    {
-        "name": "BLK",
-        "model_name": "BLK",
-        "series_ticker": "KXWNBABLK",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*blocks?\??$",
-        "desc": "blocks",
-        "info_only": True,
-    },
-    {
-        "name": "STL",
-        "model_name": "STL",
-        "series_ticker": "KXWNBASTL",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*steals?\??$",
-        "desc": "steals",
-        "info_only": True,
-    },
-    {
-        "name": "PRA",
-        "model_name": "PRA",
-        "series_ticker": "KXWNBAPRA",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*P\+R\+A\??$",
-        "desc": "P+R+A",
-        "info_only": True,
-    },
-    {
-        "name": "TOTAL",
-        "model_name": None,
-        "series_ticker": "KXWNBATOTAL",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*points\??$",
-        "desc": "team total",
-        "info_only": True,
-    },
+    {"name": "PTS", "model_name": "PTS", "series_ticker": "KXWNBAPTS",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*points\??$", "desc": "points", "info_only": False},
+    {"name": "REB", "model_name": "REB", "series_ticker": "KXWNBAREB",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*rebounds?\??$", "desc": "rebounds", "info_only": False},
+    {"name": "AST", "model_name": "AST", "series_ticker": "KXWNBAAST",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*assists?\??$", "desc": "assists", "info_only": False},
+    {"name": "3PT", "model_name": "FG3M", "series_ticker": "KXWNBA3PT",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*threes?\??$", "desc": "three-pointers", "info_only": False},
+    {"name": "BLK", "model_name": "BLK", "series_ticker": "KXWNBABLK",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*blocks?\??$", "desc": "blocks", "info_only": False},
+    {"name": "STL", "model_name": "STL", "series_ticker": "KXWNBASTL",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*steals?\??$", "desc": "steals", "info_only": True},
+    {"name": "PRA", "model_name": "PRA", "series_ticker": "KXWNBAPRA",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*P\+R\+A\??$", "desc": "P+R+A", "info_only": False},
+    {"name": "TOTAL", "model_name": None, "series_ticker": "KXWNBATOTAL",
+     "pattern": r"^(.+?):\s*(\d+)\+?\s*points\??$", "desc": "team total", "info_only": True},
 ]
 
 
@@ -136,9 +85,8 @@ def _load_regressor(model_name: str):
 
 def _match_player(title: str, latest: pd.DataFrame) -> pd.Series:
     """Match player name from Kalshi title to WNBA feature data.
-    
-    WNBA data is team-level (no player_name), so this always returns None
-    for individual player props. Team totals may match by team abbreviation.
+
+    Now works with player-level data (PlayerGameLogs API provides player_name).
     """
     if not title or latest is None or latest.empty:
         return None
@@ -156,17 +104,23 @@ def _match_player(title: str, latest: pd.DataFrame) -> pd.Series:
         exact = latest[latest["team_abbreviation"].str.lower() == clean.lower()]
         if len(exact) >= 1:
             return exact.iloc[-1]
-    # Try player_name if it exists (for future player-level data)
+    # Try player_name if it exists (for player-level data)
     if "player_name" in latest.columns:
         exact = latest[latest["player_name"].str.lower() == clean.lower()]
-        if len(exact) >= 1:
-            return exact.iloc[-1]
+        if len(exact) == 1:
+            return exact.iloc[0]
+        if len(exact) > 1:
+            return exact.iloc[0]  # return first if multiple (same player, different dates)
         lm = latest[latest["player_name"].str.lower().str.contains(last.lower(), na=False)]
-        if len(lm) >= 1:
+        if len(lm) == 1:
+            return lm.iloc[0]
+        if len(lm) > 1:
             fi = lm[lm["player_name"].str.lower().str[0] == first[0].lower()]
-            if len(fi) >= 1:
-                return fi.iloc[-1]
-            return lm.iloc[-1]
+            if len(fi) == 1:
+                return fi.iloc[0]
+            elif len(fi) > 1:
+                return fi.iloc[0]
+            return lm.iloc[0]
     return None
 
 
@@ -189,15 +143,14 @@ def _p_ge_line(row, model, residual_std, line_val, feature_names, stat_name="", 
     else:
         z = _norm.ppf(p_raw)
         p_corrected = _norm.cdf(z - WANG_LAMBDA)
-    p_corrected = min(0.75, float(p_corrected))
+    p_corrected = min(0.999, float(p_corrected))
     return max(0.001, p_corrected), float(mu)
 
 
 def load_features():
-    """Load WNBA data and build features.
-    
-    Currently uses team-level data from LeagueGameFinder.
-    When player-level data becomes available, this will use WNBADataSource properly.
+    """Load WNBA player-level data and build features.
+
+    Uses PlayerGameLogs API data (player-level game logs with player_name).
     """
     from src.features.wnba import WNBAFeatureEngineer
     from src.config.settings import SportConfig
@@ -226,14 +179,17 @@ def load_features():
     featured = fe.build_features(all_games)
     print(f"  Feature engineering: {len(featured)} rows, {len(featured.columns)} cols", flush=True)
 
-    # Merge team info back
-    if "team_name" in all_games.columns and "team_abbreviation" in all_games.columns \
-       and "player_id" in all_games.columns and "game_date" in all_games.columns:
-        merge_df = all_games[["player_id", "game_date", "team_name", "team_abbreviation"]] \
-            .drop_duplicates(subset=["player_id", "game_date"])
+    # Merge team info and player_name back (feature engineer strips them)
+    merge_cols_src = ["player_id", "game_date"]
+    merge_cols_extra = ["team_name", "team_abbreviation"]
+    if "player_name" in all_games.columns:
+        merge_cols_extra.append("player_name")
+    
+    if all(c in all_games.columns for c in merge_cols_src + ["team_name"]):
+        merge_df = all_games[merge_cols_src + merge_cols_extra].drop_duplicates(subset=merge_cols_src)
         merge_df["game_date"] = pd.to_datetime(merge_df["game_date"])
         featured["game_date"] = pd.to_datetime(featured["game_date"])
-        featured = featured.merge(merge_df, on=["player_id", "game_date"], how="left")
+        featured = featured.merge(merge_df, on=merge_cols_src, how="left")
 
     return featured
 
@@ -284,6 +240,7 @@ def main():
         reg_model, reg_std, feature_names, beta_cal = model_cache.get(model_name, (None, None, None, None))
 
         count = 0
+        info_only = mt.get("info_only", True)
         for _, mrow in mkts.iterrows():
             try:
                 ticker = mrow["ticker"]
@@ -304,28 +261,56 @@ def main():
                 if line_val <= 0:
                     continue
 
+                # Match player in feature data
+                row = _match_player(pname, latest)
+                if row is None and not info_only:
+                    continue
+
+                # Predict probability if model available
+                if reg_model is not None and row is not None:
+                    try:
+                        p_yes, mu = _p_ge_line(row, reg_model, reg_std, line_val,
+                                              feature_names, stat_name=model_name or "", beta_cal=beta_cal)
+                    except Exception:
+                        p_yes = 0.5
+                        mu = 0
+                else:
+                    p_yes = 0.5
+                    mu = 0
+
+                yes_edge = p_yes - yes_mid
+                no_edge = (1 - p_yes) - (1 - yes_mid)
+
                 label = f"{pname} {line_val}+ {desc}"
                 all_opps.append({
                     "type": name, "ticker": ticker,
                     "side": "yes",
                     "price_cents": max(1, int(yes_mid * 100)),
-                    "model_prob": 0.5,
+                    "model_prob": round(p_yes, 4),
                     "market_prob": round(yes_mid, 4),
-                    "edge": 0.0,
+                    "edge": round(max(yes_edge, no_edge), 4),
+                    "yes_edge": round(yes_edge, 4),
+                    "no_edge": round(no_edge, 4),
                     "contracts": 1,
                     "player": pname,
                     "team": "",
                     "line_val": line_val,
                     "stat_desc": desc,
                     "label": label,
+                    "info_only": info_only,
                 })
                 count += 1
             except Exception:
                 pass
 
-        print(f"  {name:4s} ({series:11s}): {count} markets (info_only — team-level models)")
+        tag = "info_only" if info_only else "active"
+        print(f"  {name:4s} ({series:11s}): {count} markets ({tag})")
 
-    print(f"\nTotal markets found: {len(all_opps)} (all info_only — no model-based predictions)")
+    print(f"\nTotal markets found: {len(all_opps)}")
+    if all_opps:
+        active_count = sum(1 for o in all_opps if not o.get("info_only", True))
+        info_count = len(all_opps) - active_count
+        print(f"  Active models: {active_count}, info_only: {info_count}")
     if all_opps:
         print(f"\nTop 10:")
         print(f"  {'Type':5s} {'Player':25s} {'Bet':20s} {'Price':>6s}")

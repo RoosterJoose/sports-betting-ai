@@ -81,17 +81,30 @@ def predict_winner(fighter_a, fighter_b, wc, scheduled_rounds, model, features, 
     f1 = get_fighter_stats(fighter_a, fighter_db, wc_avg)
     f2 = get_fighter_stats(fighter_b, fighter_db, wc_avg)
 
+    # ── Fill ALL fighter stats from DB (prior to rolling features) ──
     stats = {
         "r_avg_sig_str_landed": f1.get("avg_sig_str_landed", 27.0),
         "b_avg_sig_str_landed": f2.get("avg_sig_str_landed", 27.0),
+        "r_avg_sig_str_pct": f1.get("avg_sig_str_pct", 0.48),
+        "b_avg_sig_str_pct": f2.get("avg_sig_str_pct", 0.48),
         "r_avg_td_landed": f1.get("avg_td_landed", 1.3),
         "b_avg_td_landed": f2.get("avg_td_landed", 1.3),
+        "r_avg_td_pct": f1.get("avg_td_pct", 0.35),
+        "b_avg_td_pct": f2.get("avg_td_pct", 0.35),
         "r_avg_sub_att": f1.get("avg_sub_att", 0.5),
         "b_avg_sub_att": f2.get("avg_sub_att", 0.5),
+        "r_current_win_streak": f1.get("current_win_streak", 1),
+        "b_current_win_streak": f2.get("current_win_streak", 1),
+        "r_current_lose_streak": f1.get("current_lose_streak", 0),
+        "b_current_lose_streak": f2.get("current_lose_streak", 0),
+        "r_longest_win_streak": f1.get("longest_win_streak", 3),
+        "b_longest_win_streak": f2.get("longest_win_streak", 3),
         "r_wins": f1.get("wins", 5), "b_wins": f2.get("wins", 5),
         "r_losses": f1.get("losses", 5), "b_losses": f2.get("losses", 5),
         "r_total_rounds_fought": f1.get("total_rounds_fought", 10),
         "b_total_rounds_fought": f2.get("total_rounds_fought", 10),
+        "r_total_title_bouts": f1.get("total_title_bouts", 0),
+        "b_total_title_bouts": f2.get("total_title_bouts", 0),
         "r_height_cms": f1.get("height_cms", 178.0),
         "b_height_cms": f2.get("height_cms", 178.0),
         "r_reach_cms": f1.get("reach_cms", 183.0),
@@ -99,15 +112,38 @@ def predict_winner(fighter_a, fighter_b, wc, scheduled_rounds, model, features, 
         "r_weight_lbs": f1.get("weight_lbs", 170.0),
         "b_weight_lbs": f2.get("weight_lbs", 170.0),
         "r_age": f1.get("age", 30), "b_age": f2.get("age", 30),
+        "r_odds": f1.get("odds", 0), "b_odds": f2.get("odds", 0),
+        "r_win_by_ko_tko": f1.get("win_by_ko_tko", 3),
+        "b_win_by_ko_tko": f2.get("win_by_ko_tko", 3),
+        "r_win_by_submission": f1.get("win_by_submission", 2),
+        "b_win_by_submission": f2.get("win_by_submission", 2),
+        "r_win_by_decision_unanimous": f1.get("win_by_decision_unanimous", 2),
+        "b_win_by_decision_unanimous": f2.get("win_by_decision_unanimous", 2),
+        "r_win_by_decision_split": f1.get("win_by_decision_split", 0),
+        "b_win_by_decision_split": f2.get("win_by_decision_split", 0),
+        "r_win_by_decision_majority": f1.get("win_by_decision_majority", 0),
+        "b_win_by_decision_majority": f2.get("win_by_decision_majority", 0),
+        "r_match_weightclass_rank": f1.get("match_weightclass_rank", 50),
+        "b_match_weightclass_rank": f2.get("match_weightclass_rank", 50),
+        "r_stance": f1.get("stance", "orthodox"),
+        "b_stance": f2.get("stance", "orthodox"),
         "weight_class": wc, "no_of_rounds": scheduled_rounds,
         "r_fighter": fighter_a, "b_fighter": fighter_b,
         "game_id": "0", "game_date": pd.Timestamp.now(),
         "total_fight_time_secs": 652, "finish_round": 3,
+        "title_bout": 1 if scheduled_rounds >= 5 else 0,
+        "gender": "Womens" if "women" in wc else "Male",
+        "better_rank": 0,
     }
     row = pd.DataFrame([stats])
     featured = build_ufc_features(row)
-    available = [c for c in features if c in featured.columns]
-    X = featured[available].fillna(0)
+
+    # Ensure ALL model features exist — fill rolling/layoff features with 0
+    for c in features:
+        if c not in featured.columns:
+            featured[c] = 0.0
+
+    X = featured[[c for c in features if c in featured.columns]].fillna(0)
 
     prob = float(model.predict_proba(X)[0, 1])
 
@@ -263,6 +299,103 @@ def scan():
             print(f"    {o['ticker']}  {o['status']}  {o.get('yes_price_dollars','?')}")
     else:
         print("  No active UFC orders")
+
+
+def get_ufc_bets(kc=None, min_edge=0.05) -> list:
+    """Return structured list of qualifying UFC bets for morning_scan integration.
+    
+    Each bet dict has the same schema as other morning_scan bet dicts:
+      type, ticker, side, price_cents, model_prob, market_prob, edge,
+      contracts, player, team, line_val, stat_desc, label
+    """
+    kc = kc or KalshiClient()
+    model, meta, cal, fighter_db, wc_avg = load_model()
+    if model is None:
+        return []
+
+    features = meta["features"] if meta else FEATURE_COLS
+
+    mkts = kc.list_markets(limit=500)
+    if mkts is None or mkts.empty:
+        return []
+
+    txt = mkts["ticker"].str.cat(mkts["title"], sep=" ", na_rep="")
+    mask = txt.str.contains(
+        r"UFC|MMA|FIGHT(?:ER)?|BOXING|FIGHTING|WINNER\b|VS\.?\s",
+        case=False, na=False, regex=True
+    )
+    ufc = mkts[mask]
+    if ufc.empty:
+        return []
+
+    results = []
+    for _, m in ufc.iterrows():
+        try:
+            ticker = m["ticker"]
+            title = m.get("title", "")
+            yb_v = m.get("yes_bid_dollars", 0)
+            ya_v = m.get("yes_ask_dollars", 1)
+            yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+            ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+            if yb <= 0 and ya >= 1.0:
+                continue
+            yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+
+            fighter_a, fighter_b = parse_fighters_from_title(title)
+            if not fighter_a or not fighter_b:
+                continue
+
+            wc = get_weight_class(title)
+            sched = get_scheduled_rounds(wc)
+
+            cal_prob, raw_prob, a_in_db, b_in_db = predict_winner(
+                fighter_a, fighter_b, wc, sched,
+                model, features, cal, fighter_db, wc_avg
+            )
+
+            fighter_in_title = fighter_a.lower() in title.lower()
+            opponent_in_title = fighter_b.lower() in title.lower()
+
+            if opponent_in_title and not fighter_in_title:
+                p_model = 1 - cal_prob
+                market_prob = yes_mid
+            else:
+                p_model = cal_prob
+                market_prob = yes_mid
+
+            edge = p_model - market_prob
+
+            # Require both fighters in DB + minimum edge
+            if edge < min_edge or not a_in_db or not b_in_db:
+                continue
+            if yes_mid < 0.10 or yes_mid > 0.80:
+                continue
+
+            # Determine which fighter is being bet on
+            if opponent_in_title and not fighter_in_title:
+                bet_fighter = fighter_b
+            else:
+                bet_fighter = fighter_a
+
+            results.append({
+                "type": "UFC",
+                "ticker": ticker,
+                "side": "yes",
+                "price_cents": max(1, int(yes_mid * 100)),
+                "model_prob": round(p_model, 4),
+                "market_prob": round(market_prob, 4),
+                "edge": round(edge, 4),
+                "contracts": 1,
+                "player": bet_fighter,
+                "team": "",
+                "line_val": 0,
+                "stat_desc": "win",
+                "label": f"UFC-{bet_fighter} wins ({title})",
+            })
+        except Exception:
+            pass
+
+    return results
 
 
 if __name__ == "__main__":

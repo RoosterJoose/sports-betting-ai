@@ -46,6 +46,13 @@ TARGETS = [
     ("HR",      "hitter",  [1]),
     ("TB",      "hitter",  [1, 2, 3]),
     ("H_R_RBI", "hitter",  [1, 2, 3, 4]),
+    ("IP",      "pitcher", [14, 15, 16, 17, 18]),      # outs ~4.5-6 IP
+    ("H",       "pitcher", [3, 4, 5, 6, 7]),
+    ("BB",      "pitcher", [1, 2, 3]),
+    ("ER",      "pitcher", [1, 2, 3, 4]),
+    ("R",       "hitter",  [1]),
+    ("RBI",     "hitter",  [1]),
+    ("SB",      "hitter",  [1]),
 ]
 
 
@@ -66,9 +73,11 @@ def _compute_stat(df: pd.DataFrame, model_name: str) -> np.ndarray:
         r = df.get("r", pd.Series(0, index=df.index)).values
         rbi = df.get("rbi", pd.Series(0, index=df.index)).values
         return h + r + rbi
-    # Fallback: use column with matching name
+    # Generic: use column matching model_name lowercased
     col = model_name.lower()
-    return df[col].values if col in df.columns else np.zeros(len(df))
+    if col in df.columns:
+        return df[col].values
+    return np.zeros(len(df))
 
 
 def build_all():

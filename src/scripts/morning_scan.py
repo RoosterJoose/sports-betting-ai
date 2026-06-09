@@ -8,7 +8,7 @@ Usage:
     python -m src.scripts.morning_scan             # dry run
     python -m src.scripts.morning_scan --bet        # place orders
 """
-import sys, json, warnings, time, re
+import os, sys, json, warnings, time, re
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 import numpy as np
@@ -117,7 +117,30 @@ def place_with_verify(kc, ticker, side, price_cents, contracts, model_prob):
         return True
 
 
+def _load_dotenv():
+    """Load .env file so env vars are available (e.g., BETTING_ENABLED)."""
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.strip().split("=", 1)
+                os.environ.setdefault(k, v)
+
+
 def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
+    # ── Safety gate: BETTING_ENABLED must be explicitly 'true' to place live orders ──
+    _load_dotenv()
+    betting_enabled = os.environ.get("BETTING_ENABLED", "").strip().lower() == "true"
+    if auto_bet and not betting_enabled:
+        print()
+        print("  " + "!" * 66)
+        print("  !!! SAFETY: --bet passed but BETTING_ENABLED is not 'true' in .env")
+        print("  !!! To enable live betting: add 'BETTING_ENABLED=true' to your .env file")
+        print("  !!! Defaulting to DRY RUN for now")
+        print("  " + "!" * 66)
+        print()
+        auto_bet = False
+
     print("=" * 70)
     print(f"  MORNING SCAN - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 70)
@@ -184,10 +207,15 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                         # Use empirical calibration (pass stat_name for calibration lookup)
                         stat_col = model_name.lower()
                         p_yes, mu = _p_ge_line(prow, m, s, line_val, stat_name=model_name)
-                        # Cross-reference with actual 2026 rate (more conservative for YES edge)
+                        # Cross-reference with actual 2026 rate (conservative for YES edge)
                         recency_rate, _, _ = _recency_check(pname, line_val, stat_col=stat_col)
                         if recency_rate >= 0:
-                            p_yes = max(p_yes, recency_rate)  # use higher = more conservative for YES
+                            # Only override when recency differs meaningfully (>10%),
+                            # matching kalshi_mlb_unified.py standalone script behavior.
+                            # Use MIN to be conservative: if player is underperforming
+                            # this season, use the lower rate.
+                            if abs(p_yes - recency_rate) > 0.10:
+                                p_yes = min(p_yes, recency_rate)
                         yes_edge = p_yes - yes_mid
                         if yes_edge >= min_edge and 0.10 <= yes_mid <= 0.80:
                             _, team = get_team_from_ticker(ticker)
@@ -264,12 +292,17 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
         wc_bets = wc_scan()
         if wc_bets:
             for q in wc_bets:
+                # scan_wc edge_pct is ratio-% (model_p/mkt_p - 1) × 100,
+                # e.g. 692% for a 6.5c longshot.  Use simple diff as edge.
+                model_p = q["model_p"]
+                mkt_p = q["mkt_p"]
+                edge = model_p - mkt_p
                 all_bets.append({
                     "type": "WC", "ticker": q["ticker"],
                     "side": "yes",
                     "price_cents": max(1, int(q["ya"] * 100)),
-                    "market_prob": q["mkt_p"], "model_prob": q["model_p"],
-                    "edge": q["edge_pct"] / 100.0,
+                    "market_prob": mkt_p, "model_prob": model_p,
+                    "edge": edge,
                     "contracts": q.get("contracts", 1),
                     "player": q.get("match", "?"),
                     "team": q.get("pick", "?"),
@@ -529,6 +562,9 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                         )
                         yes_edge = p_yes - yes_mid
 
+                        if yes_edge < min_edge or yes_mid < 0.10 or yes_mid > 0.80:
+                            continue
+
                         label = f"{pname} {line_val}+ {desc}"
                         all_bets.append({
                             "type": mname, "ticker": ticker,
@@ -714,10 +750,53 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     if nhl_bet_count == 0:
         print("  (NHL is off-season — no markets or no qualifying edges)")
 
-    # === 8. Safe Compounder ===
+    # === 8. UFC FIGHT MARKETS ===
     print()
     print("  " + "-" * 66)
-    print("  8. SAFE COMPOUNDER (NO-side on longshots)")
+    print("  8. UFC FIGHT MARKETS (Winner — experimental)")
+    print("  " + "-" * 66)
+    ufc_bet_count = 0
+    try:
+        from src.scripts.kalshi_ufc import get_ufc_bets
+        ufc_bets = get_ufc_bets(kc=kc, min_edge=min_edge)
+        if ufc_bets:
+            for b in ufc_bets:
+                all_bets.append(b)
+            ufc_bet_count = len(ufc_bets)
+            print(f"  -> {ufc_bet_count} qualifying UFC bets")
+            for b in sorted(ufc_bets, key=lambda x: -x["edge"])[:5]:
+                print(f"     {b['player']:25s} model={b['model_prob']:.0%} mkt={b['market_prob']:.0%} edge={b['edge']:+.0%}")
+        else:
+            print("  No qualifying UFC bets found")
+    except Exception as e:
+        print(f"  UFC error: {e}")
+
+    # === 9. COLLEGE FOOTBALL (game winner markets) ===
+    print()
+    print("  " + "-" * 66)
+    print("  9. COLLEGE FOOTBALL (game winner — trained XGB model)")
+    print("  " + "-" * 66)
+    cfb_bet_count = 0
+    try:
+        from src.scripts.kalshi_cfb import get_cfb_bets
+        cfb_bets = get_cfb_bets(kc=kc, min_edge=min_edge)
+        if cfb_bets:
+            for b in cfb_bets:
+                all_bets.append(b)
+            cfb_bet_count = len(cfb_bets)
+            print(f"  -> {cfb_bet_count} qualifying CFB bets")
+            for b in sorted(cfb_bets, key=lambda x: -x["edge"])[:5]:
+                print(f"     {b['player']:25s} vs {b['team']:25s} "
+                      f"model={b['model_prob']:.0%} mkt={b['market_prob']:.0%} edge={b['edge']:+.0%}")
+        else:
+            print("  No qualifying CFB bets found")
+    except Exception as e:
+        print(f"  CFB error: {e}")
+
+    # === 10. Safe Compounder ===
+    print()
+    print("  " + "-" * 66)
+    print("  10. SAFE COMPOUNDER (NO-side on longshots)")
     print("  " + "-" * 66)
     try:
         from src.execution.kalshi_trader import KalshiTrader
@@ -744,12 +823,12 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  Compounder error: {e}")
 
-    # === 9. Multi-Leg Parlays (all prop types + F5 + NFL + NBA + WNBA + NHL) ===
+    # === 11. Multi-Leg Parlays (all prop types + F5 + CFB + NFL + NBA + WNBA + NHL) ===
     print()
     print("  " + "-" * 66)
-    print("  9. MULTI-LEG PARLAYS (2/3/4-leg — all prop types)")
+    print("  11. MULTI-LEG PARLAYS (2/3/4-leg — all prop types)")
     print("  " + "-" * 66)
-    PARLAY_ALLOWED_TYPES = {"KS", "HR", "TB", "HRR", "F5", "WC",
+    PARLAY_ALLOWED_TYPES = {"KS", "HR", "TB", "HRR", "F5", "WC", "UFC", "CFB",
                            "PASS_YDS", "PASS_TD", "RUSH_YDS", "REC", "REC_YDS", "TD",
                            "PTS", "REB", "AST", "BLK", "STL", "3PT", "FTM",
                            "PRA", "PA", "PR", "RA", "2D", "3D",
@@ -778,11 +857,11 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     if len(parlay_opps) >= 2:
         finder = KalshiParlayFinder(min_edge=min_edge)
         parlay_results = finder.find_best(parlay_opps, top_n=5)
-        display_parlays(parlay_results, "Best 2/3/4-leg Combos (all props + F5)")
+        display_parlays(parlay_results, "Best 2/3/4-leg Combos (all props + F5 + CFB)")
     else:
         print(f"  Need 2+ edges (have {len(parlay_opps)})")
 
-    # === 10. TOP PLAYS Leaderboard ===
+    # === 12. TOP PLAYS Leaderboard ===
     print()
     print("=" * 70)
     print("  * TOP PLAYS FOR TODAY - Ranked by Edge")
@@ -835,11 +914,11 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     else:
         print("  No qualifying plays found")
 
-    # === 11. Place Orders ===
+    # === 13. Place Orders ===
     if auto_bet and all_bets:
         print()
         print("=" * 70)
-        print("  11. PLACING SINGLE ORDERS (--bet mode)")
+        print("  13. PLACING SINGLE ORDERS (--bet mode)")
         print("=" * 70)
         top_plays = sorted(all_bets, key=lambda x: -x.get("edge", 0))
         placed = 0
@@ -878,12 +957,12 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                 time.sleep(2)
         print(f"  Placed {placed} single orders | Exposure: ${total_exposure:.2f} | Balance: ${kc.get_balance():.2f}")
 
-        # === 11b. Place Parlay Orders ===
+        # === 13b. Place Parlay Orders ===
         parlay_placed = 0
         total_parlay_exposure = 0.0
         print()
         print("=" * 70)
-        print("  11b. PLACING PARLAY ORDERS (--bet mode, if parlays found)")
+        print("  13b. PLACING PARLAY ORDERS (--bet mode, if parlays found)")
         print("=" * 70)
         try:
             parlay_bets = []
@@ -943,15 +1022,57 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
         print("  No qualifying bets found — nothing to place")
     elif not auto_bet:
         print()
-        print("  DRY RUN - no orders placed (use --bet to enable)")
+        print("  DRY RUN - no orders placed")
+        print("  To place live orders: (1) add BETTING_ENABLED=true to .env, (2) run with --bet")
 
-    # === 12. Log to Trade Tracker (paper or live) ===
+    # === 14. Log to Trade Tracker (paper or live) ===
     if all_bets:
         paper_mode = "--paper" in sys.argv
         tt = TradeTracker()
+
+        # Sport lookup by bet type — ordered dict, first match wins
+        SPORT_BY_TYPE = {
+            # MLB
+            "KS": "mlb", "HR": "mlb", "TB": "mlb", "HRR": "mlb", "F5": "mlb",
+            # NFL
+            "PASS_YDS": "nfl", "PASS_TD": "nfl", "RUSH_YDS": "nfl",
+            "REC": "nfl", "REC_YDS": "nfl", "TD": "nfl", "INT": "nfl",
+            "PASS_ATT": "nfl",            "PASS_ATT": "nfl", "RUSH+REC_YDS": "nfl",
+            # NBA
+            "PTS": "nba", "REB": "nba", "AST": "nba", "BLK": "nba",
+            "STL": "nba", "3PT": "nba", "FTM": "nba",
+            "PRA": "nba", "PA": "nba", "PR": "nba", "RA": "nba",
+            "2D": "nba", "3D": "nba",
+            # World Cup
+            "WC": "world_cup",
+            # UFC
+            "UFC": "ufc",
+            # CFB
+            "CFB": "cfb",
+            # Safe Compounder
+            "COMP": "compounder",
+        }
+        # Prefix-based fallbacks (checked after exact match)
+        PREFIX_SPORT = [
+            ("WNBA-", "wnba"),
+            ("NHL-", "nhl"),
+            ("MLB-", "mlb"),
+        ]
+
         for b in all_bets:
+            bt = b.get("type", "")
+            # Exact match first
+            _sport = SPORT_BY_TYPE.get(bt)
+            # Prefix fallback
+            if _sport is None:
+                for pfx, sport_label in PREFIX_SPORT:
+                    if bt.startswith(pfx):
+                        _sport = sport_label
+                        break
+            if _sport is None:
+                _sport = "unknown"
             tt.log_trade(
-                sport="mlb",
+                sport=_sport,
                 model_name=b.get("type", "unknown"),
                 ticker=b.get("ticker", ""),
                 title=b.get("label", ""),
@@ -974,9 +1095,25 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
 
 
 if __name__ == "__main__":
+    # Load .env so BETTING_ENABLED is available
+    _load_dotenv()
+
     auto = "--bet" in sys.argv
     bankroll = None
     for i, a in enumerate(sys.argv):
         if a == "--bankroll" and i + 1 < len(sys.argv):
             bankroll = float(sys.argv[i + 1])
+
+    # ── Safety gate at entry point ──
+    betting_enabled = os.environ.get("BETTING_ENABLED", "").strip().lower() == "true"
+    if auto and not betting_enabled:
+        print()
+        print("  " + "!" * 66)
+        print("  !!! SAFETY BLOCK: --bet was passed but BETTING_ENABLED is not 'true'")
+        print("  !!! Add BETTING_ENABLED=true to .env to enable live betting")
+        print("  !!! Running as DRY RUN instead")
+        print("  " + "!" * 66)
+        print()
+        auto = False
+
     morning_scan(bankroll=bankroll, auto_bet=auto)

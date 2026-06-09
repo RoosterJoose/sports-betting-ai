@@ -1,7 +1,46 @@
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from src.features.base import FeatureEngineer
+
+# Statcast directory for handedness lookups
+STATCAST_DIR = Path(__file__).resolve().parents[2] / "data" / "cache" / "mlb" / "statcast"
+
+# ── Handedness caches (loaded once per process) ──
+_PITCHER_HAND_CACHE: dict[str, str] = {}  # player_id -> "R" or "L"
+_BATTER_HAND_CACHE: dict[str, str] = {}   # player_id -> "R" or "L"
+_HANDEDNESS_LOADED = False
+
+
+def _load_handedness():
+    """Load pitcher and batter handedness from Statcast parquet files.
+    
+    Cached globally so multiple feature builds don't re-read the files.
+    Returns (pitcher_hand_map, batter_hand_map) where maps are player_id -> "R"|"L".
+    """
+    global _PITCHER_HAND_CACHE, _BATTER_HAND_CACHE, _HANDEDNESS_LOADED
+    if _HANDEDNESS_LOADED:
+        return _PITCHER_HAND_CACHE, _BATTER_HAND_CACHE
+    
+    _HANDEDNESS_LOADED = True
+    files = sorted(STATCAST_DIR.glob("statcast_202*.parquet"))
+    if not files:
+        return {}, {}
+    
+    for fpath in files:
+        try:
+            df = pd.read_parquet(fpath, columns=["pitcher", "p_throws", "batter", "stand"])
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        pit_hand = df.groupby("pitcher")["p_throws"].first().to_dict()
+        bat_hand = df.groupby("batter")["stand"].first().to_dict()
+        _PITCHER_HAND_CACHE.update({str(k): v for k, v in pit_hand.items() if pd.notna(v)})
+        _BATTER_HAND_CACHE.update({str(k): v for k, v in bat_hand.items() if pd.notna(v)})
+    
+    return _PITCHER_HAND_CACHE, _BATTER_HAND_CACHE
 
 # Statcast park factors for K/9 (higher = more pitcher-friendly = more Ks)
 PARK_FACTOR_K = {
@@ -56,6 +95,66 @@ class MLBFeatureEngineer(FeatureEngineer):
         # Team abbreviation mapping for park factors
         df["team_abbr"] = df["team_id"].astype(int).map(TEAM_IDS).fillna("UNK")
         df["opp_abbr"] = df.get("opponent_id", df["team_id"]).fillna(-1).astype(int).map(TEAM_IDS).fillna("UNK")
+
+        # ── Opponent quality: lineup K% (temporally correct) ────────────
+        # Research: lineup K% varies 15-25% across teams. Sportsbooks price
+        # off pitcher season averages, ignoring the specific lineup's K rate.
+        # Fix: compute cumulative team batting K% from games BEFORE each row,
+        #       so early-season games don't see future data (no leakage).
+        #       Only meaningful for pitchers; hitters get NaN.
+        if all(c in df.columns for c in ["so", "ab", "position", "opponent_id", "team_id"]):
+            # Sort by date (already sorted above, but be explicit)
+            df = df.sort_values(["game_date", "player_id"]).reset_index(drop=True)
+            # Cumulative team batting K%: expanding window per team, shifted
+            cum_so = {}
+            cum_ab = {}
+            opp_k_vals = []
+            for idx, row in df.iterrows():
+                opp_id = str(row["opponent_id"])
+                if opp_id in cum_so and cum_ab.get(opp_id, 0) > 0:
+                    k_pct = cum_so[opp_id] / cum_ab[opp_id]
+                else:
+                    k_pct = 0.22  # MLB average batting K%
+                opp_k_vals.append(k_pct)
+                # Update cumulative stats from this row (hitters only)
+                if str(row.get("position", "")) != "P":
+                    tid = str(row["team_id"])
+                    so = float(row.get("so", 0) or 0)
+                    ab = float(row.get("ab", 0) or 0)
+                    cum_so[tid] = cum_so.get(tid, 0) + so
+                    cum_ab[tid] = cum_ab.get(tid, 0) + ab
+            df["opp_k_pct"] = opp_k_vals
+            # Only pitchers face opponent batting K%; hitters get 0
+            is_pitcher = df.get("position", "").astype(str).isin(["P", "SP", "RP", "CP"])
+            df.loc[~is_pitcher, "opp_k_pct"] = 0.0
+        else:
+            df["opp_k_pct"] = 0.0
+
+        # ── Platoon handedness ─────────────────────────────────────────
+        # Research: LHP vs RHP measurably affects K%, HR%, and TB allowed.
+        # Extreme platoon situations (6+ same-side batters vs starter)
+        # are underpriced by sportsbooks.
+        # NOTE: opponent_id in game logs is a TEAM ID, not a player ID,
+        # so per-game platoon matchup requires team-level LHB% aggregation
+        # (future). For now: player_is_lefty captures the individual
+        # handedness advantage, which is predictive on its own.
+        if "player_id" in df.columns and "position" in df.columns:
+            pitcher_hand, batter_hand = _load_handedness()
+            if pitcher_hand or batter_hand:
+                # Map individual player handedness (player_id IS a player ID)
+                df["player_hand"] = df["player_id"].astype(str).map(
+                    lambda pid: pitcher_hand.get(pid, batter_hand.get(pid, ""))
+                )
+                df["player_is_lefty"] = (df["player_hand"] == "L").astype(int)
+                df.drop(columns=["player_hand"], inplace=True)
+                n_known = (df["player_is_lefty"].notna()).sum()
+                if n_known > 0:
+                    pct_l = df["player_is_lefty"].mean() * 100
+                    print(f"  Player handedness: {n_known}/{len(df)} rows, {pct_l:.1f}% lefty", flush=True)
+            else:
+                df["player_is_lefty"] = 0
+        else:
+            df["player_is_lefty"] = 0
 
         # Park factors: home team's park (pre-game knowledge, no leakage)
         park_k = []
@@ -126,7 +225,8 @@ class MLBFeatureEngineer(FeatureEngineer):
         df = df.sort_values(["game_date", "player_id"]).reset_index(drop=True)
 
         keep_cols = ["player_id", "game_date", "game_pk", "position", "team_id", "player_name", "team_abbr", "gs",
-                     "home_or_away", "park_factor_k", "park_factor_hr", "park_factor_tb"]
+                     "home_or_away", "park_factor_k", "park_factor_hr", "park_factor_tb",
+                     "opp_k_pct", "player_is_lefty"]
         for c in df.columns:
             if any(c.endswith(f"_avg_{w}") for w in self.windows):
                 keep_cols.append(c)

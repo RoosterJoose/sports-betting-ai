@@ -27,44 +27,69 @@ class WNBADataSource(DataSource):
         if cache_path.exists():
             df = pd.read_parquet(cache_path)
             self._cache["games"] = df
-            print(f"  WNBA: {len(df)} rows from cache")
+            if "player_name" in df.columns:
+                print(f"  WNBA: {len(df)} rows, {df.player_id.nunique()} players from cache")
+            else:
+                print(f"  WNBA: {len(df)} rows from cache (no player_name — likely old team-level data)")
             return df
 
         try:
-            from nba_api.stats.endpoints import leaguegamefinder
+            from nba_api.stats.endpoints import playergamelogs
         except ImportError:
             raise ImportError("pip install nba_api")
 
-        target_seasons = set()
+        # Map pipeline seasons to WNBA season years
+        # WNBA season year = the year the season starts (e.g. 2025 for 2025 season)
+        import time
+        target_years = set()
         for s in seasons:
             try:
-                (int(s))
-                target_seasons.add(f"2{int(s)}")
+                sy = int(str(s)[:4])
+                # For WNBA, season is the starting year
+                target_years.add(str(sy))
             except ValueError:
                 pass
 
-        finder = leaguegamefinder.LeagueGameFinder(
-            timeout=60,
-            league_id_nullable="10",
-        )
-        try:
-            df = finder.get_data_frames()[0]
-        except Exception as e:
-            print(f"  WNBA fetch failed: {e}")
+        if not target_years:
+            target_years = {"2025", "2026"}
+
+        frames = []
+        for year in sorted(target_years):
+            api_season = year  # WNBA seasons are single-year (e.g., "2025")
+            print(f"  Fetching WNBA {api_season} via PlayerGameLogs...", flush=True)
+            try:
+                logs = playergamelogs.PlayerGameLogs(
+                    league_id_nullable="10",
+                    season_nullable=api_season,
+                    season_type_nullable="Regular Season",
+                    timeout=60,
+                )
+                df = logs.get_data_frames()[0]
+                if df is None or df.empty:
+                    print(f"  No data for {api_season}")
+                    continue
+                df.columns = [c.lower() for c in df.columns]
+                df["season"] = api_season
+                if "game_date" in df.columns:
+                    df["game_date"] = pd.to_datetime(df["game_date"])
+                if "player_id" in df.columns:
+                    df["player_id"] = df["player_id"].astype(str)
+                # Ensure standard columns exist
+                for col in ["pts", "reb", "ast", "stl", "blk", "tov", "fg3m", "fg3a", "fgm", "fga", "ftm", "fta", "min"]:
+                    if col not in df.columns:
+                        df[col] = 0
+                frames.append(df)
+                print(f"  WNBA {api_season}: {len(df)} rows, {df.player_id.nunique()} players", flush=True)
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"  WNBA {api_season} fetch failed: {e}", flush=True)
+
+        if not frames:
+            print("  No WNBA data available")
             return pd.DataFrame()
 
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        df.columns = [c.lower() for c in df.columns]
-        df["game_date"] = pd.to_datetime(df["game_date"])
-        df["player_id"] = df["team_id"].astype(str)
-
-        # Filter to requested seasons
-        if target_seasons:
-            df = df[df["season_id"].isin(target_seasons)]
-
-        df.to_parquet(cache_path)
-        self._cache["games"] = df
-        print(f"  WNBA: {len(df)} rows, {df.player_id.nunique()} teams, seasons={sorted(df['season_id'].unique())}")
-        return df
+        result = pd.concat(frames, ignore_index=True)
+        print(f"  WNBA total: {len(result)} rows, {result.player_id.nunique()} players across {len(frames)} seasons", flush=True)
+        result.to_parquet(cache_path)
+        self._cache["games"] = result.copy()
+        return result

@@ -175,6 +175,125 @@ def main():
         json.dump(cal_table, f, indent=2)
     print(f"Calibration saved to {cal_file}")
 
+    # ── Build fighter lookup table ────────────────────────────────────────
+    print("\nBuilding fighter lookup table...")
+    # Read raw CSV directly for per-fighter stats
+    raw_path = Path("data/cache/ufc/ufc-master.csv")
+    if not raw_path.exists():
+        print("  Raw CSV not found, skipping fighter lookup")
+    else:
+        raw = pd.read_csv(raw_path)
+        raw.columns = [c.strip().lower().replace(" ", "_") for c in raw.columns]
+
+        fighter_stats = {}
+        # For each fighter, collect stats from both red and blue corner appearances
+        for _, row in raw.iterrows():
+            for prefix, label in [("r_", "r_fighter"), ("b_", "b_fighter")]:
+                fname = str(row.get(label, "")).strip()
+                if not fname or fname == "nan":
+                    continue
+                if fname not in fighter_stats:
+                    fighter_stats[fname] = {
+                        "avg_sig_str_landed": [], "avg_td_landed": [], "avg_sub_att": [],
+                        "wins": None, "losses": None,
+                        "total_rounds_fought": [],
+                        "height_cms": [], "reach_cms": [], "weight_lbs": [], "age": [],
+                        "weight_class": None, "total_fight_time_secs": [],
+                    }
+                f = fighter_stats[fname]
+                # Collect numeric stats
+                for col, key in [
+                    (f"{prefix}avg_sig_str_landed", "avg_sig_str_landed"),
+                    (f"{prefix}avg_td_landed", "avg_td_landed"),
+                    (f"{prefix}avg_sub_att", "avg_sub_att"),
+                    (f"{prefix}total_rounds_fought", "total_rounds_fought"),
+                    (f"{prefix}height_cms", "height_cms"),
+                    (f"{prefix}reach_cms", "reach_cms"),
+                    (f"{prefix}weight_lbs", "weight_lbs"),
+                    (f"{prefix}age", "age"),
+                ]:
+                    val = row.get(col, None)
+                    if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                        try:
+                            f[key].append(float(val))
+                        except (ValueError, TypeError):
+                            pass
+
+                # Total fight time
+                tft = row.get("total_fight_time_secs", row.get("total_fight_time", None))
+                if tft is not None and not (isinstance(tft, float) and np.isnan(tft)):
+                    try:
+                        f["total_fight_time_secs"].append(float(tft))
+                    except (ValueError, TypeError):
+                        pass
+
+                # Wins/losses (team-level, shared by both corners)
+                if f["wins"] is None:
+                    w = row.get(f"{prefix}wins", None)
+                    if w is not None and not (isinstance(w, float) and np.isnan(w)):
+                        try:
+                            f["wins"] = int(float(w))
+                        except (ValueError, TypeError):
+                            pass
+                if f["losses"] is None:
+                    l = row.get(f"{prefix}losses", None)
+                    if l is not None and not (isinstance(l, float) and np.isnan(l)):
+                        try:
+                            f["losses"] = int(float(l))
+                        except (ValueError, TypeError):
+                            pass
+
+                # Weight class
+                wc = row.get("weight_class", None)
+                if wc is not None and str(wc).strip().lower() != "nan":
+                    f["weight_class"] = str(wc).strip().lower()
+
+        # Collapse lists to means
+        fighter_db = {}
+        for fname, stats in fighter_stats.items():
+            entry = {}
+            for key in ["avg_sig_str_landed", "avg_td_landed", "avg_sub_att",
+                        "total_rounds_fought", "height_cms", "reach_cms",
+                        "weight_lbs", "age", "total_fight_time_secs"]:
+                vals = stats[key]
+                entry[key] = round(float(np.mean(vals)), 1) if vals else None
+            entry["wins"] = stats["wins"] if stats["wins"] is not None else 5
+            entry["losses"] = stats["losses"] if stats["losses"] is not None else 5
+            entry["weight_class"] = stats["weight_class"] or "middleweight"
+            entry["avg_fight_time"] = entry["total_fight_time_secs"] or 652
+            fighter_db[fname] = entry
+
+        # Save fighter lookup
+        fighter_file = MODEL_DIR / "fighter_lookup.json"
+        with open(fighter_file, "w") as f:
+            json.dump(fighter_db, f, indent=2)
+        print(f"  Saved fighter lookup: {len(fighter_db)} fighters to {fighter_file}")
+
+        # Build weight-class averages
+        wc_data = {}
+        for fname, entry in fighter_db.items():
+            wc = entry["weight_class"]
+            if wc not in wc_data:
+                wc_data[wc] = {"avg_fight_time": [], "height_cms": [], "weight_lbs": [], "age": []}
+            for key in ["avg_fight_time", "height_cms", "weight_lbs", "age"]:
+                if entry.get(key) is not None:
+                    wc_data[wc][key].append(entry[key])
+
+        wc_avg = {}
+        for wc, data in wc_data.items():
+            wc_avg[wc] = {k: round(float(np.mean(v)), 1) for k, v in data.items() if v}
+
+        # Add _default from middleweight or first available
+        default = wc_avg.get("middleweight", {})
+        if not default:
+            default = next(iter(wc_avg.values()), {})
+        wc_avg["_default"] = default
+
+        wc_file = MODEL_DIR / "wc_averages.json"
+        with open(wc_file, "w") as f:
+            json.dump(wc_avg, f, indent=2)
+        print(f"  Saved weight-class averages: {len(wc_avg)} classes to {wc_file}")
+
 
 if __name__ == "__main__":
     main()

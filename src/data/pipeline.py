@@ -19,11 +19,12 @@ SPORT_REGISTRY = {
     "wnba":  ("src.data.wnba.WNBADataSource",   "src.features.wnba.WNBAFeatureEngineer"),
     "worldcup":("src.data.world_cup.WorldCupDataSource", "src.features.worldcup.WorldCupFeatureEngineer"),
     "ufc":   ("src.data.ufc.UFCDataSource",   "src.features.ufc_fe.UFCFeatureEngineer"),
+    "cfb":   ("src.data.cfb.CFBDataSource",   "src.features.cfb.CFBFeatureEngineer"),
 }
 
 HISTORICAL_SEASONS = {
     "nba": 4, "nfl": 5, "mlb": 3, "nhl": 4,
-    "golf": 2, "soccer": 3, "nascar": 3, "tennis": 3, "wnba": 3, "ufc": 5,
+    "golf": 2, "soccer": 3, "nascar": 3, "tennis": 3, "wnba": 3, "ufc": 5, "cfb": 5,
 }
 
 # Combined stat name -> component column mapping for target resolution

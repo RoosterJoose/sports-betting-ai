@@ -6,7 +6,9 @@ display_name = "UFC / MMA"
 leagues = { ufc = 12 }
 
 [stat_types]
-single = ["SIGNIFICANT_STRIKES", "TAKEDOWNS", "KNOCKDOWN_WIN", "FIGHT_MINUTES"]
+single = ["SIGNIFICANT_STRIKES", "TAKEDOWNS", "KNOCKDOWN_WIN", "FIGHT_MINUTES",
+          "CURRENT_WIN_STREAK", "CURRENT_LOSE_STREAK", "AVG_SIG_STR_PCT",
+          "AVG_TD_PCT", "LONGEST_WIN_STREAK", "TOTAL_TITLE_BOUTS"]
 combined = []
 
 [features]

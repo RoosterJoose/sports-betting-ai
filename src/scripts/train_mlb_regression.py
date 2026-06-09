@@ -125,7 +125,7 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="pitcher", compute_
     import re
     lagged_pattern = re.compile(r'.*_avg_\d+$')
     extra_feats = {"days_rest", "b2b", "four_in_six", "park_factor_k", "park_factor_hr", "park_factor_tb",
-                    "opp_catcher_framing"}
+                    "opp_k_pct", "player_is_lefty", "opp_catcher_framing"}
     # Add Statcast features if available
     if "barrel_rate_avg5" in featured.columns:
         for sc_f in STATCAST_FEATURES:
@@ -248,22 +248,10 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="pitcher", compute_
     model.booster_.save_model(str(MODEL_DIR / f"lgb_{stat_name.lower()}.txt"))
 
     # Save calibration bins (EmpiricalCalibrator format)
-    # Format: {line: {"bins": [{"p_pred_min": 0, "p_pred_max": 1.0, "p_actual": Y, "n": N}]}}
-    cal_data = {}
-    for entry in cal_bins:
-        line = str(entry["line"])
-        cal_data[line] = {
-            "bins": [{
-                "p_pred_min": 0.0,
-                "p_pred_max": 1.0,
-                "p_actual": entry["p_actual"],
-                "n": entry["n"],
-            }]
-        }
-    cal_path_empirical = CALIB_DIR / f"{stat_name.lower()}_empirical.json"
-    with open(cal_path_empirical, "w") as f:
-        json.dump(cal_data, f, indent=2)
-    # Also keep old format for reference
+    # NOTE: Single-bin-per-line calibrations (p_pred_min=0, p_pred_max=1)
+    # destroy model signal by mapping all predictions to the prior.
+    # The proper multi-bin calibration is built separately by
+    # build_calibration.py.  Only save the legacy format for reference.
     cal_path_legacy = CALIB_DIR / f"lgb_{stat_name.lower()}.calibration.json"
     with open(cal_path_legacy, "w") as f:
         json.dump(cal_bins, f, indent=2)
