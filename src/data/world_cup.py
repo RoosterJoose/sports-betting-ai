@@ -59,7 +59,11 @@ def _get_team_code_map():
 def _code_to_name(code):
     return _get_team_code_map().get(code, code)
 
-YEARS_TO_FETCH = [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
+# Fetch from 2010 to get 12+ years of pre-2022 training data (was 2018–2021 only).
+# eloratings.net has results back to the 1990s; 2010 gives rich historical
+# coverage without going so far back that team identities are unrecognisable.
+YEARS_TO_FETCH = [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
+                  2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 COLUMNS = ["year","month","day","team1","team2","score1","score2","tournament",
            "venue","elo_change1","elo1","elo2","elo_change2","rank_change1","rank_change2"]

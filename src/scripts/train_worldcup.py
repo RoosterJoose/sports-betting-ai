@@ -37,7 +37,7 @@ def train_match_model():
     """Train multiclass model with clean temporal train/val/test split."""
     print("=" * 65)
     print("  WORLD CUP MATCH OUTCOME CLASSIFIER")
-    print("  Temporal split: train 2018-2021, val 2022 WC, test 2023+" )
+    print("  Temporal split: train ≤2021 (all pre-WC), val 2022 WC, test 2023+" )
     print("=" * 65)
 
     # 1. Fetch data
@@ -117,8 +117,8 @@ def train_match_model():
     dates = pd.to_datetime(feat_df["match_date"])
     tourn_code = feat_df["tournament_code"].fillna("")
 
-    # Train: 2018-2021 (all matches before 2022 WC)
-    train_mask = (dates.dt.year >= 2018) & (dates.dt.year <= 2021)
+    # Train: all matches before 2022 (entire pre-WC history)
+    train_mask = dates.dt.year <= 2021
     # Val: 2022 World Cup only
     val_mask = (dates.dt.year == 2022) & (tourn_code == "WC")
     # Test: 2023+ matches (2026 qualifiers, friendlies, etc.)
@@ -137,7 +137,7 @@ def train_match_model():
     y_test = y[test_idx]
 
     print(f"\n  Split sizes:")
-    print(f"    Train (2018-2021):     {len(X_train):5d}")
+    print(f"    Train (≤2021):          {len(X_train):5d}")
     print(f"    Val   (2022 WC):    {len(X_val):5d}")
     print(f"    Test  (2023+):      {len(X_test):5d}")
 
@@ -222,8 +222,8 @@ def train_match_model():
     for _, r in imp.head(8).iterrows():
         print(f"    {r['feature']:12s} {r['importance']}")
 
-    # 11. Calibration from TRAINING set (2,635 matches — val set only has 57, too noisy)
-    print("\n6. Saving calibration (from training set, ~2.6K matches)...")
+    # 11. Calibration from TRAINING set
+    print(f"\n6. Saving calibration (from training set, {len(y_train)} matches)...")
     for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
         cal_table = []
         class_preds = preds_train[:, cls_idx]
