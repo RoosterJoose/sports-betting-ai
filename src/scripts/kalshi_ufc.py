@@ -59,13 +59,27 @@ def load_model():
     return model, meta, cal, fighter_db, wc_avg
 
 
+def _normalize_name(name: str) -> str:
+    """Strip punctuation and lowercase for fuzzy name matching.
+    'Sean O\"Malley', 'Sean O'Malley', 'Sean OMalley' -> 'seanomalley'
+    """
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
 def get_fighter_stats(fighter_name, fighter_db, wc_avg):
+    """Look up fighter stats. Returns (stats_dict, found_in_db).
+    Uses punctuation-stripped normalization for fuzzy matching.
+    """
     if fighter_name in fighter_db:
-        return fighter_db[fighter_name]
+        return fighter_db[fighter_name], True
+    # Fuzzy match: try with punctuation-stripped normalization
+    norm_lookup = _normalize_name(fighter_name)
     matches = [(name, stats) for name, stats in fighter_db.items()
-               if fighter_name.lower() in name.lower()]
+               if _normalize_name(name) == norm_lookup
+               or fighter_name.lower() in name.lower()
+               or _normalize_name(name) in norm_lookup]
     if matches:
-        return sorted(matches, key=lambda x: abs(len(x[0]) - len(fighter_name)))[0][1]
+        return sorted(matches, key=lambda x: abs(len(_normalize_name(x[0])) - len(norm_lookup)))[0][1], True
     default_wc = wc_avg.get("_default", wc_avg.get("middleweight", {}))
     return {
         "avg_sig_str_landed": 27.0, "avg_td_landed": 1.3,
@@ -74,7 +88,7 @@ def get_fighter_stats(fighter_name, fighter_db, wc_avg):
         "reach_cms": 183.0, "weight_lbs": 170.0, "age": 30,
         "weight_class": "middleweight",
         "avg_fight_time": default_wc.get("avg_fight_time", 652),
-    }
+    }, False
 
 
 # ── Non-fighter outcomes to filter from combo titles ────────────────
@@ -350,10 +364,10 @@ def scan():
         missing_opponents = []
         for fn in fighters:
             opp, wc, rounds = get_opponent(fn)
-            f_stats = get_fighter_stats(fn, fighter_db, wc_avg)
+            f_stats, in_db = get_fighter_stats(fn, fighter_db, wc_avg)
 
             if opp:
-                opp_stats = get_fighter_stats(opp, fighter_db, wc_avg)
+                opp_stats, _ = get_fighter_stats(opp, fighter_db, wc_avg)
                 prob = _predict_winner_direct(f_stats, opp_stats, wc, rounds, model, features, cal)
             else:
                 opp_stats = _make_generic_opponent(wc, wc_avg)
@@ -361,7 +375,7 @@ def scan():
                 missing_opponents.append(fn)
 
             indv_probs[fn] = prob
-            indv_in_db[fn] = fn in fighter_db
+            indv_in_db[fn] = in_db
 
         # Joint probability: product of individual win probabilities (independence)
         joint_prob = 1.0
@@ -495,17 +509,17 @@ def get_ufc_bets(kc=None, min_edge=0.05) -> list:
             indv_in_db = {}
             for fn in fighters:
                 opp, wc, rounds = get_opponent(fn)
-                f_stats = get_fighter_stats(fn, fighter_db, wc_avg)
+                f_stats, in_db = get_fighter_stats(fn, fighter_db, wc_avg)
 
                 if opp:
-                    opp_stats = get_fighter_stats(opp, fighter_db, wc_avg)
+                    opp_stats, _ = get_fighter_stats(opp, fighter_db, wc_avg)
                     prob = _predict_winner_direct(f_stats, opp_stats, wc, rounds, model, features, cal)
                 else:
                     opp_stats = _make_generic_opponent(wc, wc_avg)
                     prob = _predict_winner_direct(f_stats, opp_stats, wc, rounds, model, features, cal)
 
                 indv_probs[fn] = prob
-                indv_in_db[fn] = fn in fighter_db
+                indv_in_db[fn] = in_db
 
             # Joint probability
             joint_prob = 1.0
