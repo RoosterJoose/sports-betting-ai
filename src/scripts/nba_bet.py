@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # Import EXACTLY as the working heredoc test does
 from src.data.kalshi import KalshiClient
+from src.data.nba_injuries import get_out_players, is_player_out
 from src.scripts.kalshi_nba_unified import _is_current_market, _match_player, load_features, _load_regressor, _p_ge_line
 
 MARKETS = [
@@ -44,6 +45,8 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
     Each bet dict matches the morning_scan schema:
       type, ticker, side, price_cents, model_prob, market_prob, edge,
       contracts, player, team, line_val, stat_desc, label
+
+    Automatically filters out players listed as OUT on the ESPN injury report.
     """
     kc = kc or KalshiClient()
     latest = load_features()
@@ -52,8 +55,16 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
     if "game_date" in latest.columns:
         latest = latest.sort_values("game_date").groupby("player_id").last().reset_index()
 
+    # Fetch injury report — players who are definitively OUT
+    out_players = get_out_players()
+    if out_players:
+        print(f"  Injury report: {len(out_players)} players OUT", flush=True)
+    else:
+        print(f"  Injury report: no data (ESPN unavailable — proceeding without)", flush=True)
+
     model_cache = {}
     results = []
+    skipped_injured = 0
 
     for name, series, model_name, info_only in MARKETS:
         try:
@@ -92,6 +103,11 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
                 if mrow is None:
                     continue
 
+                # Skip injured/OUT players — never bet on someone who won't play
+                if out_players and is_player_out(pname, out_set=out_players):
+                    skipped_injured += 1
+                    continue
+
                 try:
                     p_yes, mu = _p_ge_line(mrow, reg_model, reg_std, line_val, feature_names,
                                            stat_name=name, beta_cal=beta_cal)
@@ -115,6 +131,9 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
             except Exception:
                 pass
 
+    if skipped_injured:
+        print(f"  Skipped {skipped_injured} injured/OUT player markets", flush=True)
+
     return results
 
 
@@ -137,6 +156,10 @@ def main():
     print(f"Players: {len(latest)}")
 
     all_opps = []
+    out_players = get_out_players()
+    skipped_injured = 0
+    if out_players:
+        print(f"Injury report: {len(out_players)} players OUT")
 
     for name, series, model_name, info_only in MARKETS:
         print(f"\nScanning {name} ({series})...", flush=True)
@@ -170,6 +193,11 @@ def main():
             mrow = _match_player(pname, latest)
             if mrow is None: continue
 
+            # Skip injured/OUT players
+            if out_players and is_player_out(pname, out_set=out_players):
+                skipped_injured += 1
+                continue
+
             try:
                 p_yes, mu = _p_ge_line(mrow, model, std, line_val, feats,
                                        stat_name=name, beta_cal=cal)
@@ -188,6 +216,9 @@ def main():
             count += 1
 
         print(f"  Matched: {count}", flush=True)
+
+    if skipped_injured:
+        print(f"\nSkipped {skipped_injured} injured/OUT player markets")
 
     print(f"\nTotal: {len(all_opps)}")
 
