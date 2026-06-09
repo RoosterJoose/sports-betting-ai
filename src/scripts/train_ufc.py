@@ -274,13 +274,16 @@ def main():
         if aug_path.exists():
             with open(aug_path) as f:
                 aug = json.load(f)
-            merged = 0
+            new = 0
+            updated = 0
             for name, stats in aug.items():
                 if name not in fighter_db:
-                    fighter_db[name] = stats
-                    merged += 1
-            if merged:
-                print(f"  Merged {merged} augmented fighters from {aug_path}")
+                    new += 1
+                else:
+                    updated += 1
+                fighter_db[name] = stats  # always apply (overwrites stale CSV)
+            if new or updated:
+                print(f"  Merged {new} new + {updated} updated fighters from {aug_path}")
                 with open(fighter_file, "w") as f:
                     json.dump(fighter_db, f, indent=2)
 
