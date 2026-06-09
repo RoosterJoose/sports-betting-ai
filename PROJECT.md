@@ -1,143 +1,309 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-08** (Session: WC fix + live betting enabled)
+Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates)
+
+---
+
+## ⚠️ READ THIS FIRST
+
+This is a live sports betting system that places real-money trades on Kalshi. Every bet must be justified with statistical evidence. No guessing.
+
+### Hard Rules
+1. **Max $30/day** in total exposure across all sports
+2. **Sports only** — lines, props, and outcomes. No novelty/politics/meme markets. Ever.
+3. **Run every bet by the user** before placing it. No auto-betting without approval.
+4. **Statistical proof required** — don't recommend a bet unless the model's edge is validated against backtest data.
+
+### Safety Gates (all active)
+| Gate | Status |
+|------|--------|
+| `BETTING_ENABLED=false` in `.env` | ✅ Blocks all live orders |
+| Cron runs `--paper` mode only | ✅ No auto-betting |
+| `kalshi_trader.py` sports-only filter | ✅ Blocks non-sports |
+| `morning_scan.py` COMP type guard | ✅ Blocks compounder in placing loop |
+| NBA injury pipeline (ESPN API) | ✅ Filters OUT players |
+
+---
 
 ## Quick Start
+
 ```bash
 source .venv/bin/activate
-python -m src.scripts.morning_scan          # dry run
-python -m src.scripts.morning_scan --bet    # LIVE orders (needs BETTING_ENABLED=true in .env)
+
+# Dry run scan (safe — no orders)
+python -m src.scripts.morning_scan --paper
+
+# To enable live betting:
+# 1. Set BETTING_ENABLED=true in .env
+# 2. Run: python -m src.scripts.morning_scan --bet
+# 3. Set back to false after
+
+# Check balance
+python3 -c "from src.data.kalshi import KalshiClient; c=KalshiClient(); print(f'\${c.get_balance():.2f}')"
+
+# Refresh UFC fighter DB (Kaggle dataset through March 2026)
+python3 src/scripts/refresh_ufc_fighters.py --apply
+
+# Retrain WC model
+python3 -m src.scripts.train_worldcup
+
+# Retrain NBA models
+python3 src/scripts/build_nba_correlations.py
 ```
 
-## Live Betting Status: 🟢 LIVE ($25 max exposure)
+---
 
-- **BETTING_ENABLED**: `true`
-- **Max exposure**: $25 (quarter-Kelly with 3% cap)
-- **Balance**: ~$99.26
-- **Orders placed today**: 5 compounder NO + 6 parlay legs = 11 total, $24.16 exposure
+## Architecture
+
+### Directory Map
+```
+src/
+├── data/           # Data sources (fetch + cache game logs)
+│   ├── kalshi.py          # Kalshi API client
+│   ├── pipeline.py        # Sport registry + data pipeline
+│   ├── nba.py             # NBA data (nba_api PlayerGameLogs)
+│   ├── mlb.py             # MLB data (MLB-StatsAPI)
+│   ├── nfl.py             # NFL data (nfl_data_py)
+│   ├── world_cup.py       # WC data (eloratings.net) + Elo-adjusted features
+│   ├── nba_injuries.py    # NBA injury fetcher (ESPN public API)
+│   └── ufc.py, cfb.py, etc.
+├── features/       # Feature engineering
+│   ├── base.py            # FeatureEngineer base class
+│   ├── nba.py, mlb.py, nfl.py, worldcup.py, etc.
+├── scripts/        # Training, scanning, betting
+│   ├── morning_scan.py    # Unified daily scan orchestrator
+│   ├── train_worldcup.py  # WC LGBM multiclass trainer
+│   ├── nba_bet.py         # NBA scanner + get_nba_bets()
+│   ├── kalshi_mlb_unified.py, kalshi_nba_unified.py, etc.
+│   ├── backtest_mlb.py, backtest_nba.py, backtest_wc.py
+│   └── train_ufc.py, train_nascar.py, train_cfb_models.py, etc.
+├── execution/      # Bet placement, risk, parlays
+│   ├── kalshi_trader.py   # Trade execution + safe_compounder (sports-only now)
+│   ├── risk.py            # Kelly sizing
+│   ├── kalshi_parlay.py   # Multi-leg parlay finder
+│   └── edge_scanner.py    # Edge evaluation
+├── models/         # Shared model infrastructure
+│   ├── calibrator.py      # BetaCalibrator + EmpiricalCalibrator
+│   ├── distributions.py   # p_ge_stat (NegativeBinomial, Poisson, Normal)
+│   └── predictor.py, trainer.py
+└── utils/
+    ├── trade_tracker.py   # Logs all trades (paper + live)
+    └── logger.py
+config/             # Sport configs (nba.toml, mlb.toml, etc.)
+models/             # Trained model artifacts (per sport subdirectory)
+  nba/              # 17 XGBoost .json models + .metrics.json + beta_cal.json
+  mlb/              # 18 XGBoost models + importance CSVs + calibration/
+  worldcup/         # LGBM multiclass + calibration/
+  ufc/              # XGBoost winner model + fighter_lookup.json
+  cfb/              # XGBoost spread/total/win models
+  nfl/              # XGBoost regression models (off-season)
+  wnba/             # Team-level models (mostly info_only)
+  nhl/              # Info-only (off-season)
+  nascar/           # NASCAR models
+  golf/             # Golf season stat models
+```
+
+### Data Flow
+```
+Data Source → Cache (parquet) → Feature Engineer → Model → Prediction → Edge Scanner → Risk → Order
+```
 
 ---
 
-## Model Inventory (27 live models across 3+ sports)
+## Model Inventory
 
-### MLB — 9 active, 2 disabled
+### 🟢 MLB — Best-calibrated, 11 active + 7 info_only
+
+MLB models are the most reliable. All backtested against naive baselines.
+
 | Stat | R² | Backtest | Status |
 |------|-----|----------|--------|
-| SO (KS) | 0.33 | ✅ 11/11 | **live** |
-| HR | 0.15 | ✅ 8/8 | **live** |
-| TB | 0.27 | ✅ 8/8 | **live** |
-| HRR (H+R+RBI) | 0.12 | ✅ 7/7 | **live** |
-| IP | 0.80 | ✅ 15/15 | **live** |
-| ER | 0.14 | ✅ 17/17 | **live** |
-| H | 0.13 | ✅ 12/12 | **live** |
-| BB | 0.41 | ✅ 16/16 | **live** |
-| RBI | 0.02 | ✅ 9/9 | **live** |
-| R | 0.017 | 🟡 2/4 | info_only |
-| SB | 0.02 | 🟡 1/4 | info_only |
+| SO (Strikeouts) | ~0.33 | ✅ Beats naive | **live** |
+| HR (Home Runs) | ~0.15 | ✅ Beats naive | **live** |
+| TB (Total Bases) | ~0.27 | ✅ Beats naive | **live** |
+| HRR (H+R+RBI) | ~0.12 | ✅ Beats naive | **live** |
+| IP (Innings Pitched) | ~0.80 | ✅ Best model | **live** |
+| ER (Earned Runs) | ~0.14 | ✅ Beats naive | **live** |
+| H (Hits) | ~0.13 | ✅ Beats naive | **live** |
+| BB (Walks) | ~0.41 | ✅ Beats naive | **live** |
+| RBI | ~0.02 | ✅ Beats naive | **live** |
+| R (Runs) | ~0.017 | 🟡 Weak | info_only |
+| SB (Stolen Bases) | ~0.02 | 🟡 Weak | info_only |
 
-### NBA — 11 active, 6 info_only
-| Stat | R² | Backtest | Status |
-|------|-----|----------|--------|
-| PTS | 0.45 | ✅ 30/30 | **live** |
-| REB | 0.45 | ✅ 12/12 | **live** |
-| AST | 0.43 | ✅ 9/9 | **live** |
-| FG3M | 0.22 | ✅ 8/8 | **live** |
-| FGM | 0.48 | ✅ 11/11 | **live** |
-| FTM | 0.45 | ✅ 8/8 | **live** |
-| PR | 0.55 | ✅ 42/42 | **live** |
-| PA | 0.55 | ✅ 38/38 | **live** |
-| RA | 0.52 | ✅ 19/19 | **live** |
-| PRA | 0.55 | ✅ 49/49 | **live** |
-| FPTS | 0.54 | ✅ 61/61 | **live** |
-| TOV | 0.22 | 🟡 7/8 | info_only |
-| FG3A | 0.38 | ✅ 10/10 | info_only |
-| FTA | 0.47 | ✅ 9/9 | info_only |
-| STL | 0.11 | 🟡 4/7 | info_only |
-| BLK | 0.19 | 🟡 5/7 | info_only |
-| SB | 0.17 | 🟡 6/8 | info_only |
+**Training**: `src/scripts/train_mlb_regression.py` — XGBoost regressors with BetaCal.
+**Scanner**: `src/scripts/kalshi_mlb_unified.py` — loads models, matches Kalshi markets, computes p_ge_line.
+**Features**: Rolling averages (3/5/10/20 game), pitcher handedness, park factors, opponent quality.
 
-### WNBA — 6 active, 5 info_only
-| Stat | R² | Status |
-|------|-----|--------|
-| PTS | 0.45 | **live** |
-| REB | 0.45 | **live** |
-| AST | 0.43 | **live** |
-| FG3M | 0.22 | **live** |
-| BLK | 0.32 | **live** |
-| PRA | 0.53 | **live** |
-| STL | 0.11 | info_only (R² too weak) |
-| TOV | 0.21 | info_only |
-| TOTAL | — | info_only (no model) |
-| PA | 0.51 | info_only |
-| PR | 0.52 | info_only |
+### 🟡 NBA — Models retrained June 2026, injury filter active
 
-### World Cup 2026 — 1 model (multiclass)
+17 XGBoost models trained on 121K rows (4 seasons). Retrained June 2026 (were stale from June 2024).
+
+| Stat | R² | Status | Note |
+|------|-----|--------|------|
+| PTS | ~0.45 | **live** | NegativeBinomial distribution |
+| REB | ~0.45 | **live** | |
+| AST | ~0.43 | **live** | |
+| FG3M | ~0.22 | **live** | Poisson |
+| FGM | ~0.48 | **live** | |
+| FTM | ~0.45 | **live** | |
+| PR (PTS+REB) | ~0.55 | **live** | Combined stat |
+| PA (PTS+AST) | ~0.55 | **live** | |
+| RA (REB+AST) | ~0.52 | **live** | |
+| PRA (PTS+REB+AST) | ~0.55 | **live** | |
+| FPTS | ~0.54 | **live** | Fantasy points |
+| BLK | ~0.19 | 🟡 info_only | Weak R² |
+| STL | ~0.11 | 🟡 info_only | Very weak |
+| TOV | ~0.22 | 🟡 info_only | |
+| FG3A | ~0.38 | 🟡 info_only | |
+| FTA | ~0.47 | 🟡 info_only | |
+| SB (STL+BLK) | ~0.17 | 🟡 info_only | |
+
+**Injury pipeline**: `src/data/nba_injuries.py` fetches ESPN injury API, caches 3hr, filters OUT players in `nba_bet.py`. 126 OUT players detected on first fetch.
+
+**⚠️ Known issue**: Miles McBride appeared in scan output despite 126 OUT players. Needs investigation — either ESPN name mismatch, status changed, or market is for future game.
+
+**Training**: `scripts/build_nba_correlations.py` — XGBoost regressors.
+**Scanner**: `src/scripts/nba_bet.py` → `get_nba_bets()` called by `morning_scan.py`.
+**Features**: Rolling averages/medians/EWM, schedule density, home/away splits, opponent adjustments, consistency/streak features.
+
+### 🟡 World Cup 2026 — Retrained with Elo-adjusted form, expanded data
+
 | Metric | Value |
 |--------|-------|
-| Model | LGBM multiclass (17 features) |
-| Val (2022 WC) | Acc 77.2%, Brier 0.298 vs naive 0.386 (+23%) |
-| Backtest Brier | 0.322 (beats naive, 2022 WC) |
-| Status | **live** |
+| Model | LightGBM multiclass (3-class: home/draw/away) |
+| Features | 18 (Elo ×4, Elo-adj form ×10, is_friendly, is_neutral) |
+| Training data | 8,232 matches (2010–2021) |
+| Val (2022 WC) | 78.9% accuracy, Brier 0.2973 vs naive 0.3860 (+23%) |
+| Test (2023+) | 80.7% accuracy, Brier 0.2573 (+44%) |
 
-*Fixed 2026-06-08: Removed ISNS class weighting (was causing 60-70% draw predictions vs 25% reality). Now uses no weighting + stronger regularization (reg_alpha=1.0, reg_lambda=2.0).*
+**Recent fixes** (June 9 session):
+1. Elo-adjusted form features: raw win/draw rate → `perf` (actual - Elo_expected) + `opp_elo` (avg opponent Elo). Fixed Jordan-vs-Argentina coin flip (was 33/33/33, now 83/13/4).
+2. Expanded training data: 2010–2026 (was 2018–2026), 3.1x more matches (8,232 vs 2,635).
+3. `is_neutral` feature: flags neutral-venue finals. Val acc improved 75.4% → 78.9%.
 
-### CFB — 1 model (XGBoost, binary winner)
-| Status | **live** |
-|--------|-----------|
+**⚠️ Remaining issue**: Home-field bias persists (~67-70% home win in close-Elo matchups). Model trained on qualifier-dominated data (75% home wins). The `is_neutral` feature reduced bias ~1-2% but didn't eliminate it.
 
-### NFL — 7 models (off-season)
-| Stat | R² |
-|------|-----|
-| PASS_YDS | 0.84 |
-| PASS_TD | 0.72 |
-| PASS_ATT | 0.85 |
-| RUSH_YDS | 0.61 |
-| REC_YDS | 0.36 |
-| REC | 0.42 |
-| TD | 0.32 |
+**Training**: `src/scripts/train_worldcup.py` — temporal split (train ≤2021, val 2022 WC, test 2023+).
+**Scanner**: `src/scripts/scan_wc.py` — parses KXWCGAME tickers, builds Elo ratings, predicts via model + calibration.
 
-### NHL — off-season (models exist, not backtested)
+### 🟡 UFC — Refreshed fighter DB, but odds-feature starvation
+
+| Metric | Value |
+|--------|-------|
+| Model | XGBoost binary classifier (winner) |
+| Fighter DB | 4,548 fighters (refreshed from Kaggle, March 2026) |
+| Key issue | Top features are betting odds (b_odds=5.7%, odds_diff=3.9%, r_odds=3.0%) — all set to 0 at prediction |
+
+**⚠️ Fatal flaw**: Model trained on data WITH betting odds as features, but at prediction time we feed synthetic `odds=0`. Model defaults to ~50-60% baseline. Predictions have unknown calibration.
+
+**Refresh**: `src/scripts/refresh_ufc_fighters.py` — downloads latest Kaggle dataset, updates `fighter_lookup.json`. Fixed Ciryl Gane 6-0 → 13-2, Sean O'Malley 6-1 → 19-3.
+
+**Training**: `src/scripts/train_ufc.py` — XGBoost with comprehensive features from Kaggle UFC dataset.
+
+### 🟢 CFB — Trained, not yet in season
+
+Models exist for spread margin, total points, and win prediction. Betting disabled until CFB season starts.
+
+### 🟡 NFL — Off-season
+
+7 XGBoost regression models: PASS_YDS (R²=0.84), PASS_TD (0.72), PASS_ATT (0.85), RUSH_YDS (0.61), REC_YDS (0.36), REC (0.42), TD (0.32). Scanner active but no markets in off-season.
+
+### 🟡 WNBA — Team-level models, mostly info_only
+
+11 models with R² 0.11–0.55. Currently info_only — models are team-level (not player-level) due to stale data cache. Cache was fixed (1,212→11,615 rows) but models need retraining on proper player-level data.
+
+### 🟡 NHL — Off-season, not backtested
+
+Models exist for GOALS, ASSISTS, POINTS, SHOTS, PIM. Info-only in morning scan.
+
+### NASCAR / Golf — Trained, not actively traded
+
+Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated into morning scan.
 
 ---
 
-## Key Scripts
+## Known Issues & Gaps
 
-| Script | Purpose |
-|--------|---------|
-| `src/scripts/morning_scan.py` | Unified daily scan (all sports + parlays + orders) |
-| `src/scripts/backtest_nba.py` | NBA backtest (17 models, beats-naive) |
-| `src/scripts/backtest_mlb.py` | MLB backtest |
-| `src/scripts/backtest_wc.py` | World Cup backtest (2022 WC) |
-| `src/scripts/train_worldcup.py` | WC model training (temporal split) |
-| `scripts/fit_wnba_beta_cal.py` | WNBA BetaCal fitting |
-| `scripts/fit_nba_beta_cal.py` | NBA BetaCal fitting |
+### 🔴 Critical
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| **UFC odds-feature starvation** | Model predictions have unknown calibration — top features (odds) are synthetic 0s | Retrain without odds features, OR integrate live sportsbook odds |
+| **NBA McBride injury gap** | Injured players may still get predictions if ESPN name ≠ Kalshi name | Debug name matching, add fuzzy fallback |
 
-## Infrastructure
+### 🟡 Important
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| **WC home-field bias** | 67-70% home win in close-Elo WC matches (should be ~50%) | Post-hoc neutral calibration, class weights, or venue-weighted training |
+| **NBA backtest verification** | Models retrained but not formally backtested against naive baselines | Run `backtest_nba.py` and verify beats-naive on all 17 stats |
+| **WNBA player-level models** | Current models are team-level, not player-level | Refetch WNBA data as player-level (fixed in src/data/wnba.py), retrain |
 
-- **Distributions**: NB_STATS (PTS/REB/AST/PRA/PR/PA/RA/SB/FPTS), POISSON_STATS (STL/BLK/TOV/FG3M)
-- **Calibration**: BetaCalibrator for regression models, EmpiricalCalibrator for WC multiclass
-- **Trade tracking**: `src/utils/trade_tracker.py` logs all trades (paper + live)
-- **Risk**: Kelly sizing with 0.25 quarter + 3% cap per bet
+### 🟢 Minor
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| WC draw prediction still weak | 1/11 draws predicted correctly on 2022 WC | More neutral-venue data or separate draw model |
+| CFB models exist but untested | Quality unknown until season starts | Backtest when 2026 season begins |
 
-## Session Log
+---
 
-### 2026-06-08 (late session)
-- WC model: removed ISNS weighting → Brier dropped from 0.44 to 0.32 (beats naive 0.39)
-- Fixed morning_scan.py syntax error (duplicate `for q in wc_bets:`)
-- Live betting enabled: 11 orders placed ($24.16 exposure)
-- 27 models live across MLB/NBA/WNBA/WC
+## Session Log — June 9, 2026
 
-### 2026-06-08 (main session)
-- MLB: 100% backtested, 9/11 active (R+SB disabled)
-- NBA: 17 models trained, 11 active (backtest confirms beats-naive)
-- WNBA: stale cache fix (1,212→11,615 rows), R² 0.21-0.53
-- Added `residual_std` to ModelTrainer (was using MAE as sigma proxy)
-- SB+FPTS added to NB_STATS (were falling through to Normal CDF)
-- Created `backtest_nba.py`, `fit_wnba_beta_cal.py`
-- Disabled MLB R+SB (info_only=True, weak backtest)
+### Changes This Session (7 commits)
 
-### Prior
-- WC model: LGBM multiclass, 81.8% accuracy (initial)
-- F5 Monte Carlo simulator
-- Cross-sport parlays (2/3/4-leg)
-- Cron job setup
+| Commit | Description |
+|--------|-------------|
+| `baf0457` | UFC: `_normalize_name()` fix + tuple return in kalshi_ufc.py |
+| `05eef9c` | UFC: refresh_ufc_fighters.py pipeline + train_ufc.py merge overwrite fix |
+| `a854463` | ⚠️ CRITICAL: Blocked non-sports compounder trades. `kalshi_trader.py` → sports-only filter. `morning_scan.py` → COMP type guard. **Pope/Mars/Mamdani bets will never happen again.** |
+| `f823e08` | WC: Elo-adjusted form features — `h_perf` replaces `h_wr`/`h_dr`, `h_opp_elo` added. Fixed Jordan-vs-Argentina coin flip. |
+| `f3e1b1a` | NBA: Injury data pipeline — ESPN API fetcher, filters OUT players in `nba_bet.py`. 126 OUT players detected. |
+| `8edf415` | WC: Expanded training data 2010–2026 (was 2018–2026). 3.1x more matches (8,232 vs 2,635). |
+| `14369ec` | WC: `is_neutral` feature — flags neutral-venue finals. Val acc 75.4% → 78.9%. |
+
+### What We Learned
+1. **WC form features were broken**: Raw win rate treated beating Kuwait the same as beating Brazil. Elo-adjusted `perf` and `opp_elo` fixed this.
+2. **NBA models had no injury awareness**: Built ESPN API pipeline. But McBride still slipped through — name matching needs improvement.
+3. **The compounder was a ticking time bomb**: Designed to trade non-sports novelty markets. Now permanently blocked at two layers.
+4. **WC home bias is structural**: 75% home wins in training data. `is_neutral` helps modestly but doesn't fix it. Needs post-hoc calibration.
+
+### Morning Scan Results (June 9)
+- 347 total qualifying plays across all sports
+- Top 15 leaderboard: 100% World Cup (unreliable — home-biased)
+- MLB: 91 qualifying (KS=19, HR=3, TB=24, HRR=41, F5=4)
+- NBA: 54 qualifying (126 OUT players filtered, but McBride slipped through)
+- WC: 84 qualifying (model edges inflated by remaining home bias)
+- Balance: $73.64 | Mode: PAPER
+
+### What Still Needs Validation
+- [ ] Fix Miles McBride injury filter gap
+- [ ] Run formal NBA backtest (all 17 stats vs naive)
+- [ ] Post-hoc neutral-venue calibration for WC
+- [ ] UFC: retrain without odds features OR integrate live odds
+- [ ] WNBA: retrain player-level models
+- [ ] Verify CFB model quality when season approaches
+
+---
+
+## Files Modified This Session
+
+```
+src/data/world_cup.py          # Elo-adjusted form, expanded years, is_neutral, NEUTRAL_TOURNAMENTS
+src/scripts/train_worldcup.py  # Feature list updates, expanded train split
+src/scripts/scan_wc.py         # Elo-adjusted form at prediction, WC tournament_code
+src/data/nba_injuries.py       # NEW: ESPN injury API fetcher
+src/scripts/nba_bet.py         # Injury filter in get_nba_bets() + main()
+src/scripts/refresh_ufc_fighters.py  # NEW: Kaggle UFC fighter DB refresh
+src/scripts/train_ufc.py       # Merge overwrite fix
+src/execution/kalshi_trader.py # Sports-only filter (blocks non-sports)
+src/scripts/morning_scan.py    # COMP type guard, safety label
+.env                           # BETTING_ENABLED=false
+```
+
+## Session Handoff Check
+
+When picking up in a new session:
+1. Read this PROJECT.md first
+2. Check `git log --oneline -5` for latest commits
+3. Run `python -m src.scripts.morning_scan --paper` to see current market state
+4. Verify `BETTING_ENABLED=false` in `.env`
+5. Check `grep -i "BETTING" .env` before any live trading
+6. Balance: `python3 -c "from src.data.kalshi import KalshiClient; c=KalshiClient(); print(f'\${c.get_balance():.2f}')"`
