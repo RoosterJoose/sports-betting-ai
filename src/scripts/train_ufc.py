@@ -137,10 +137,21 @@ def main():
     for _, row in importance.head(20).iterrows():
         print(f"  {row['feature']:30s} {row['importance']:.4f}")
 
-    # Save model
+    # ── Save CV fold models (used by scanner for calibration-consistent predictions) ──
+    print("\nSaving CV fold models...")
+    for fold, m in enumerate(models):
+        fold_path = MODEL_DIR / f"winner_v1_fold{fold}.json"
+        m.save_model(str(fold_path))
+        print(f"  Fold {fold} saved to {fold_path.name}")
+
+    # Save winner_v1.json = fold 0 (backward compat, calibration-consistent)
+    # The calibration was built from OOF predictions across all CV folds.
+    # Using a CV model (trained on 4/5 of data) instead of the final retrained
+    # model (trained on all data) keeps the prediction distribution consistent
+    # with the calibration table, preventing the [0-5%] bin mismatch.
     model_file = MODEL_DIR / "winner_v1.json"
-    final_model.save_model(str(model_file))
-    print(f"\nModel saved to {model_file}")
+    models[0].save_model(str(model_file))
+    print(f"Main model (CV fold 0) saved to {model_file}")
 
     # Save metadata
     meta = {
@@ -151,6 +162,8 @@ def main():
         "cv_scores": cv_scores,
         "oof_accuracy": float(overall_acc),
         "features": available,
+        "n_cv_models": len(models),
+        "model_source": "cv_fold_0",
     }
     meta_file = MODEL_DIR / "winner_v1.meta.json"
     with open(meta_file, "w") as f:

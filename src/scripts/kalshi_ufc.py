@@ -25,6 +25,12 @@ MODEL_DIR = Path("models/ufc")
 
 
 def load_model():
+    """Load UFC model and calibration.
+
+    The model (winner_v1.json) is now a CV fold model (fold 0), not the
+    final retrained model. This keeps predictions consistent with the
+    OOF calibration table built during training.
+    """
     model_file = MODEL_DIR / "winner_v1.json"
     meta_file = MODEL_DIR / "winner_v1.meta.json"
     cal_file = MODEL_DIR / "winner_calibration.json"
@@ -232,7 +238,11 @@ def _make_generic_opponent(wc: str, wc_avg: dict) -> dict:
 
 
 def _predict_winner_direct(f_stats, opp_stats, wc, rounds, model, features, cal):
-    """Predict P(fighter_a wins) given pre-fetched stats for both fighters."""
+    """Predict P(fighter_a wins) given pre-fetched stats for both fighters.
+
+    Uses a CV fold model (not final retrained) for consistency with the
+    OOF calibration table built during training.
+    """
     f1, f2 = f_stats, opp_stats
     stats = {
         "r_avg_sig_str_landed": f1.get("avg_sig_str_landed", 27.0),
@@ -293,7 +303,7 @@ def _predict_winner_direct(f_stats, opp_stats, wc, rounds, model, features, cal)
             featured[c] = 0.0
     X = featured[[c for c in features if c in featured.columns]].fillna(0)
     prob = float(model.predict_proba(X)[0, 1])
-    # Calibration
+    # Calibration — built from OOF predictions, consistent with CV fold model
     calibrated = prob
     for entry in cal:
         lo, hi = entry["bin_lo"], entry["bin_hi"]
