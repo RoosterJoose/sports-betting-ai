@@ -441,153 +441,18 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     nba_bet_count = 0
     try:
-        from src.scripts.kalshi_nba_unified import (
-            load_features as load_nba_features,
-            MARKET_TYPES as NBA_MARKET_TYPES,
-            _load_regressor as _load_nba_regressor,
-            _match_player as _match_nba_player,
-            _p_ge_line as _p_ge_nba_line,
-        )
-        nba_latest = load_nba_features()
-        if nba_latest is not None and not nba_latest.empty:
-            # Take latest game per player
-            if "game_date" in nba_latest.columns:
-                nba_latest = nba_latest.sort_values("game_date").groupby("player_id").last().reset_index()
-            nba_players = len(nba_latest)
-            print(f"  Loaded {nba_players} players", flush=True)
-
-            nba_model_cache = {}
-            for mt in NBA_MARKET_TYPES:
-                if mt.get("info_only", True):
-                    mname = mt["name"]
-                    series = mt["series_ticker"]
-                    desc = mt["desc"]
-                    # Still try to fetch info_only markets for display
-                    try:
-                        mkts = kc.list_markets(series_ticker=series, limit=10)
-                        if mkts is None or mkts.empty:
-                            continue
-                        print(f"  {mname:4s} ({series:11s}): {len(mkts)} markets (info_only — no ML model)")
-                        for _, r in mkts.iterrows():
-                            title = r.get("title", "")
-                            yb_v = r.get("yes_bid_dollars", 0)
-                            ya_v = r.get("yes_ask_dollars", 1)
-                            yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
-                            ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
-                            if yb <= 0 and ya >= 1.0:
-                                continue
-                            yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
-                            lm = re.match(mt["pattern"], title, re.IGNORECASE)
-                            if not lm:
-                                continue
-                            pname = lm.group(1).strip()
-                            label = f"{pname} {desc}"
-                            all_bets.append({
-                                "type": mname, "ticker": r["ticker"],
-                                "side": "yes",
-                                "price_cents": max(1, int(yes_mid * 100)),
-                                "model_prob": 0.5,
-                                "market_prob": round(yes_mid, 4),
-                                "edge": 0.0,
-                                "contracts": 1,
-                                "player": pname,
-                                "team": "",
-                                "line_val": 0,
-                                "stat_desc": desc,
-                                "label": label,
-                            })
-                    except Exception:
-                        pass
-                    continue
-
-                mname = mt["name"]
-                series = mt["series_ticker"]
-                pattern = mt["pattern"]
-                model_name = mt["model_name"]
-                desc = mt["desc"]
-
-                # Try to fetch markets — if none exist (off-season), skip gracefully
-                try:
-                    mkts = kc.list_markets(series_ticker=series, limit=500)
-                    if mkts is None or mkts.empty:
-                        print(f"  {mname:4s} ({series:11s}): no markets (off-season?)")
-                        continue
-                except Exception:
-                    print(f"  {mname:4s} ({series:11s}): cannot reach Kalshi")
-                    continue
-
-                # Load model (cached per model_name)
-                if model_name not in nba_model_cache:
-                    m, s, feats, cal = _load_nba_regressor(model_name)
-                    if m is None:
-                        print(f"  {mname:4s}: no regressor for {model_name}")
-                        continue
-                    nba_model_cache[model_name] = (m, s, feats, cal)
-                reg_model, reg_std, true_features, beta_cal = nba_model_cache[model_name]
-
-                count = 0
-                for _, row in mkts.iterrows():
-                    try:
-                        ticker = row["ticker"]
-                        title = row.get("title", "")
-                        yb_v = row.get("yes_bid_dollars", 0)
-                        ya_v = row.get("yes_ask_dollars", 1)
-                        yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
-                        ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
-                        if yb <= 0 and ya >= 1.0:
-                            continue
-                        yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
-
-                        lm = re.match(pattern, title, re.IGNORECASE)
-                        if not lm:
-                            continue
-                        pname = lm.group(1).strip()
-                        line_val = int(lm.group(2))
-                        if line_val <= 0:
-                            continue
-
-                        row_match = _match_nba_player(pname, nba_latest)
-                        if row_match is None:
-                            continue
-
-                        # Skip players with insufficient data
-                        avg_cols = [c for c in row_match.index
-                                    if c.endswith("_avg_3") and isinstance(row_match[c], (int, float))]
-                        if avg_cols and all(pd.isna(row_match[c]) for c in avg_cols):
-                            continue
-
-                        p_yes, mu = _p_ge_nba_line(
-                            row_match, reg_model, reg_std, line_val, true_features,
-                            stat_name=mname, beta_cal=beta_cal,
-                        )
-                        yes_edge = p_yes - yes_mid
-
-                        if yes_edge < min_edge or yes_mid < 0.10 or yes_mid > 0.80:
-                            continue
-
-                        label = f"{pname} {line_val}+ {desc}"
-                        all_bets.append({
-                            "type": mname, "ticker": ticker,
-                            "side": "yes",
-                            "price_cents": max(1, int(yes_mid * 100)),
-                            "model_prob": round(p_yes, 4),
-                            "market_prob": round(yes_mid, 4),
-                            "edge": round(yes_edge, 4),
-                            "contracts": 1,
-                            "player": pname,
-                            "team": "",
-                            "line_val": line_val,
-                            "stat_desc": desc,
-                            "label": label,
-                        })
-                        count += 1
-                    except Exception:
-                        pass
-
-                print(f"  {mname:4s} ({series:11s}): {count} qualifying bets")
-                nba_bet_count += count
+        from src.scripts.nba_bet import get_nba_bets
+        nba_bets = get_nba_bets(kc=kc, min_edge=min_edge)
+        if nba_bets:
+            for b in nba_bets:
+                all_bets.append(b)
+            nba_bet_count = len(nba_bets)
+            print(f"  -> {nba_bet_count} qualifying NBA bets")
+            for b in sorted(nba_bets, key=lambda x: -x["edge"])[:5]:
+                print(f"     {b['player']:25s} {b.get('line_val',0)}+ {b.get('stat_desc',''):10s} "
+                      f"model={b['model_prob']:.0%} mkt={b['market_prob']:.0%} edge={b['edge']:+.0%}")
         else:
-            print("  No feature data available (run data pipeline first)")
+            print("  No qualifying NBA bets found")
     except Exception as e:
         print(f"  NBA props error: {e}")
 
@@ -965,7 +830,7 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
             parlay_bets = []
             for b in all_bets:
                 bt = b["type"]
-                if bt not in ("KS", "HR", "TB", "HRR", "F5"):
+                if bt not in PARLAY_ALLOWED_TYPES:
                     continue
                 if b.get("price_cents", 50) < 1 or b.get("price_cents", 50) > 99:
                     continue

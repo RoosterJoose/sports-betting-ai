@@ -269,6 +269,21 @@ def main():
             json.dump(fighter_db, f, indent=2)
         print(f"  Saved fighter lookup: {len(fighter_db)} fighters to {fighter_file}")
 
+        # ── Merge augmented fighters (not in CSV) ─────────────────────
+        aug_path = MODEL_DIR / "fighter_augment.json"
+        if aug_path.exists():
+            with open(aug_path) as f:
+                aug = json.load(f)
+            merged = 0
+            for name, stats in aug.items():
+                if name not in fighter_db:
+                    fighter_db[name] = stats
+                    merged += 1
+            if merged:
+                print(f"  Merged {merged} augmented fighters from {aug_path}")
+                with open(fighter_file, "w") as f:
+                    json.dump(fighter_db, f, indent=2)
+
         # Build weight-class averages
         wc_data = {}
         for fname, entry in fighter_db.items():

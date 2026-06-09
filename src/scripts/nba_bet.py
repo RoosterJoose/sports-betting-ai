@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""NBA Kalshi bettor — mirrors the working heredoc test pattern exactly."""
+"""NBA Kalshi bettor — mirrors the working heredoc test pattern exactly.
+
+Usage:
+    python3 src/scripts/nba_bet.py --scan        # scan + display
+    python3 src/scripts/nba_bet.py --bet          # scan + place orders
+    python3 src/scripts/nba_bet.py --scan --json  # JSON output for morning_scan
+
+Also exposes get_nba_bets() for programmatic use by morning_scan.py.
+"""
 import sys, re, json, warnings
 warnings.filterwarnings("ignore")
 from pathlib import Path
@@ -30,11 +38,92 @@ def _extract(title):
     return pname, line_val
 
 
+def get_nba_bets(kc=None, min_edge=0.05) -> list:
+    """Return structured list of qualifying NBA bets for morning_scan integration.
+
+    Each bet dict matches the morning_scan schema:
+      type, ticker, side, price_cents, model_prob, market_prob, edge,
+      contracts, player, team, line_val, stat_desc, label
+    """
+    kc = kc or KalshiClient()
+    latest = load_features()
+    if latest is None or latest.empty:
+        return []
+    if "game_date" in latest.columns:
+        latest = latest.sort_values("game_date").groupby("player_id").last().reset_index()
+
+    model_cache = {}
+    results = []
+
+    for name, series, model_name, info_only in MARKETS:
+        try:
+            mkts = kc.list_markets(series_ticker=series, limit=500)
+            if mkts is None or mkts.empty:
+                continue
+        except Exception:
+            continue
+
+        if model_name not in model_cache:
+            m, s, feats, cal = _load_regressor(model_name)
+            if m is None:
+                continue
+            model_cache[model_name] = (m, s, feats, cal)
+        reg_model, reg_std, feature_names, beta_cal = model_cache[model_name]
+
+        for _, row in mkts.iterrows():
+            try:
+                ticker = str(row.get("ticker", ""))
+                title = str(row.get("title", ""))
+                if not _is_current_market(ticker):
+                    continue
+                pname, line_val = _extract(title)
+                if pname is None or line_val is None:
+                    continue
+                if line_val <= 0:
+                    continue
+
+                yb = float(row.get("yes_bid_dollars", 0) or 0)
+                ya = float(row.get("yes_ask_dollars", 1) or 1)
+                if yb <= 0 and ya >= 1.0:
+                    continue
+                yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+
+                mrow = _match_player(pname, latest)
+                if mrow is None:
+                    continue
+
+                try:
+                    p_yes, mu = _p_ge_line(mrow, reg_model, reg_std, line_val, feature_names,
+                                           stat_name=name, beta_cal=beta_cal)
+                except Exception:
+                    continue
+
+                edge = p_yes - yes_mid
+                if edge < min_edge:
+                    continue
+                if yes_mid < 0.10 or yes_mid > 0.80:
+                    continue
+
+                results.append({
+                    "type": name, "ticker": ticker, "side": "yes",
+                    "price_cents": max(1, int(yes_mid * 100)),
+                    "model_prob": round(p_yes, 4), "market_prob": round(yes_mid, 4),
+                    "edge": round(edge, 4), "contracts": 1,
+                    "player": pname, "team": "", "line_val": line_val,
+                    "stat_desc": name, "label": f"{pname} {line_val}+ {name}",
+                })
+            except Exception:
+                pass
+
+    return results
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--scan", action="store_true")
     p.add_argument("--bet", action="store_true")
+    p.add_argument("--json", action="store_true", help="Output JSON for morning_scan")
     args = p.parse_args()
 
     client = KalshiClient()
@@ -101,6 +190,11 @@ def main():
         print(f"  Matched: {count}", flush=True)
 
     print(f"\nTotal: {len(all_opps)}")
+
+    if args.json:
+        print(json.dumps(all_opps, default=str))
+        return
+
     all_opps.sort(key=lambda x: abs(x.get("edge",0)), reverse=True)
 
     if all_opps:
