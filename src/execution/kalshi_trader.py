@@ -43,7 +43,9 @@ class KalshiTrader:
 
     def _evaluate_no_side(self, row: pd.Series) -> Optional[dict]:
         cfg = settings.kalshi
-        if row["category"] in ["Sports", "Entertainment"]:
+        # SAFETY: Only trade Sports markets — never Pope, Mars, Politics, etc.
+        # These novelty markets are unmodeled, unpredictable, and not authorized.
+        if row["category"] != "Sports":
             return None
 
         yes_price = row["yes_price"]

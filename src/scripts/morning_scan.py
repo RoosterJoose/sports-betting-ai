@@ -655,10 +655,10 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  CFB error: {e}")
 
-    # === 10. Safe Compounder ===
+    # === 10. Safe Compounder (display only — never place live) ===
     print()
     print("  " + "-" * 66)
-    print("  10. SAFE COMPOUNDER (NO-side on longshots)")
+    print("  10. SAFE COMPOUNDER (NO-side on longshots — INFO ONLY, never traded)")
     print("  " + "-" * 66)
     try:
         from src.execution.kalshi_trader import KalshiTrader
@@ -793,6 +793,9 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
         for p in top_plays:
             if placed >= max_bets:
                 break
+            # NEVER place compounder/non-sports bets (Pope, Mars, etc.)
+            if p["type"] == "COMP":
+                continue
             ticker = p["ticker"]
             if ticker in existing_tickers:
                 continue
