@@ -214,7 +214,18 @@ WC2026_TEAMS = [
     "Korea DPR", "Bosnia and Herzegovina",
 ]
 
+def _elo_expected(team_elo, opp_elo):
+    """Elo expected win probability: 1/(1+10^((opp_elo - team_elo)/400))."""
+    return 1.0 / (1.0 + 10.0 ** ((opp_elo - team_elo) / 400.0))
+
+
 def build_feature_dataset(elo_df):
+    """Build feature dataset with Elo-adjusted form.
+
+    Replaces raw win/draw rate with *performance vs Elo expectation*
+    so that beating a minnow (expected) ≠ beating a giant (upset).
+    Also adds average opponent Elo as context for interpreting goal stats.
+    """
     if elo_df.empty:
         return pd.DataFrame()
     records = []
@@ -224,22 +235,45 @@ def build_feature_dataset(elo_df):
         date = row["match_date"]
         home, away = row["home_team"], row["away_team"]
         hs, as_ = int(row["home_score"]), int(row["away_score"])
+        elo_h = row["elo_home_pre"]
+        elo_a = row["elo_away_pre"]
 
         team_cache.setdefault(home, [])
         team_cache.setdefault(away, [])
 
-        def recent_form(team, before, n=5):
+        def elo_adjusted_form(team, team_elo_pre_match, opp_elo_pre_match, before, n=5):
+            """Return (perf, opp_elo, gs, gc, n) — Elo-adjusted form.
+
+            perf = average of (actual_points - elo_expected) over last n matches.
+                   Positive = outperforming Elo; negative = underperforming.
+            opp_elo = average opponent Elo in last n (context for goal stats).
+            """
             mlist = [m for m in reversed(team_cache.get(team, [])) if m["date"] < before][:n]
             if not mlist:
-                return 0.0, 0.0, 0.0, 0.0, 0
-            wins = sum(1 for m in mlist if m["won"])
-            draws = sum(1 for m in mlist if m["draw"])
-            gs = sum(m["gs"] for m in mlist)
-            gc = sum(m["gc"] for m in mlist)
-            return wins / len(mlist), draws / len(mlist), gs / len(mlist), gc / len(mlist), len(mlist)
+                # No history: use current opponent's Elo as best guess for "who they face"
+                return 0.0, opp_elo_pre_match, 0.0, 0.0, 0
 
-        hwr, hdr, hgs, hgc, hn = recent_form(home, date)
-        awr, adr, ags, agc, an = recent_form(away, date)
+            perf_sum = 0.0
+            opp_elo_sum = 0.0
+            gs_sum = 0.0
+            gc_sum = 0.0
+            k = len(mlist)
+
+            for m in mlist:
+                actual = 1.0 if m["won"] else (0.5 if m["draw"] else 0.0)
+                perf_sum += actual - m["elo_expected"]
+                opp_elo_sum += m["opp_elo"]
+                gs_sum += m["gs"]
+                gc_sum += m["gc"]
+
+            return perf_sum / k, opp_elo_sum / k, gs_sum / k, gc_sum / k, k
+
+        # Home team's expected win prob vs this away opponent
+        home_expected = _elo_expected(elo_h, elo_a)
+        away_expected = _elo_expected(elo_a, elo_h)
+
+        h_perf, h_opp_elo, hgs, hgc, hn = elo_adjusted_form(home, elo_h, elo_a, date)
+        a_perf, a_opp_elo, ags, agc, an = elo_adjusted_form(away, elo_a, elo_h, date)
 
         hw, aw, d_ = (1, 0, 0) if hs > as_ else ((0, 1, 0) if as_ > hs else (0, 0, 1))
 
@@ -247,16 +281,23 @@ def build_feature_dataset(elo_df):
             "match_date": date,
             "home_team": home, "away_team": away,
             "home_score": hs, "away_score": as_,
-            "elo_home": row["elo_home_pre"],
-            "elo_away": row["elo_away_pre"],
-            "elo_diff": row["elo_home_pre"] - row["elo_away_pre"],
-            "h_wr": hwr, "h_dr": hdr, "h_gs": hgs, "h_gc": hgc, "h_n": hn,
-            "a_wr": awr, "a_dr": adr, "a_gs": ags, "a_gc": agc, "a_n": an,
+            "elo_home": elo_h,
+            "elo_away": elo_a,
+            "elo_diff": elo_h - elo_a,
+            "h_perf": h_perf, "h_opp_elo": h_opp_elo, "h_gs": hgs, "h_gc": hgc, "h_n": hn,
+            "a_perf": a_perf, "a_opp_elo": a_opp_elo, "a_gs": ags, "a_gc": agc, "a_n": an,
             "home_won": hw, "draw": d_, "away_won": aw,
         })
 
-        team_cache[home].append({"date": date, "won": hw, "draw": d_, "gs": hs, "gc": as_})
-        team_cache[away].append({"date": date, "won": aw, "draw": d_, "gs": as_, "gc": hs})
+        # Store match in cache with opponent Elo + expected for future form lookups
+        team_cache[home].append({
+            "date": date, "won": hw, "draw": d_, "gs": hs, "gc": as_,
+            "opp_elo": elo_a, "elo_expected": home_expected,
+        })
+        team_cache[away].append({
+            "date": date, "won": aw, "draw": d_, "gs": as_, "gc": hs,
+            "opp_elo": elo_h, "elo_expected": away_expected,
+        })
 
     return pd.DataFrame(records)
 
@@ -303,7 +344,8 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
     elo_away : float
         Away team's Elo rating.
     hf : dict
-        Home team recent form: ``{"wr", "dr", "gs", "gc", "n"}``.
+        Home team recent form: ``{"perf", "opp_elo", "gs", "gc", "n"}``.
+        (Elo-adjusted: perf = avg actual - expected; opp_elo = avg opponent Elo)
     af : dict
         Away team recent form.
     tournament_code : str | None
@@ -330,9 +372,9 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
             vec[c] = elo_diff
         elif c == "elo_diff_abs":
             vec[c] = abs(elo_diff)
-        elif c in ("h_wr", "h_dr", "h_gs", "h_gc", "h_n"):
+        elif c in ("h_perf", "h_opp_elo", "h_gs", "h_gc", "h_n"):
             vec[c] = hf.get(c[2:], 0)
-        elif c in ("a_wr", "a_dr", "a_gs", "a_gc", "a_n"):
+        elif c in ("a_perf", "a_opp_elo", "a_gs", "a_gc", "a_n"):
             vec[c] = af.get(c[2:], 0)
         elif c == "h_goal_diff":
             vec[c] = hf.get("gs", 0) - hf.get("gc", 0)
@@ -341,21 +383,15 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
         elif c == "is_friendly":
             vec[c] = is_friendly
         else:
-            vec[c] = 0
+            # Backward compat: old models may have h_wr, h_dr, etc.
+            if c in ("h_wr", "h_dr"):
+                vec[c] = 0  # deprecated, replaced by h_perf
+            elif c in ("a_wr", "a_dr"):
+                vec[c] = 0
+            else:
+                vec[c] = 0
 
     return np.array([vec.get(c, 0) for c in features], dtype=float).reshape(1, -1)
-    df = fetch_all_matches(force_refetch)
-    if df.empty:
-        return None, None, None
-
-    elo_df = compute_elo(df)
-    feat_df = build_feature_dataset(elo_df)
-
-    teams_in_data = set(feat_df["home_team"].unique()) | set(feat_df["away_team"].unique())
-    covered = [t for t in WC2026_TEAMS if t in teams_in_data]
-    missing = [t for t in WC2026_TEAMS if t not in teams_in_data]
-
-    return df, elo_df, feat_df
 
 class WorldCupDataSource:
     """Wrapper class for World Cup ELO data source.

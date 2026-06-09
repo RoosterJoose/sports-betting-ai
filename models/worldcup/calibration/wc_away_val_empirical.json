@@ -5,13 +5,13 @@
         "p_pred_min": 0.0,
         "p_pred_max": 0.05,
         "p_actual": 0.0,
-        "n": 46
+        "n": 48
       },
       {
         "p_pred_min": 0.05,
         "p_pred_max": 0.1,
         "p_actual": 0.0,
-        "n": 9
+        "n": 7
       }
     ]
   }

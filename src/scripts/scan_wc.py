@@ -103,52 +103,70 @@ def shin_devig(prices_3way):
 _team_form_cache = None
 
 def _build_form_features(elo_df, elo_ratings):
-    """Build recent form features for all teams from ELO data.
-    Returns dict: team -> {wr, dr, gs, gc, n}
+    """Build Elo-adjusted form features for all teams from ELO data.
+
+    Uses the same logic as build_feature_dataset() in training: each match's
+    result is compared to its Elo-expected win probability, producing a
+    "performance vs expectation" metric that is comparable across confederations.
+
+    Returns dict: team -> {perf, opp_elo, gs, gc, n}
+        perf     = avg(actual_points - elo_expected) over last 5 matches
+        opp_elo  = average opponent Elo of last 5 opponents
     """
     global _team_form_cache
     if _team_form_cache is not None:
         return _team_form_cache
-    
+
+    from src.data.world_cup import _elo_expected
+
     form = {}
-    for team, elo in elo_ratings.items():
+    for team in elo_ratings:
         # Get recent matches involving this team
         team_matches = elo_df[(elo_df["home_team"] == team) | (elo_df["away_team"] == team)]
-        team_matches = team_matches.sort_values("match_date").tail(5)  # match training data (n=5)
-        
+        team_matches = team_matches.sort_values("match_date").tail(5)
+
         if team_matches.empty:
-            form[team] = {"wr": 0.0, "dr": 0.0, "gs": 0.0, "gc": 0.0, "n": 0}
+            form[team] = {"perf": 0.0, "opp_elo": elo_ratings.get(team, 1500),
+                          "gs": 0.0, "gc": 0.0, "n": 0}
             continue
-        
-        wins, draws, gs, gc = 0, 0, 0, 0
+
+        perf_sum, opp_elo_sum, gs_sum, gc_sum = 0.0, 0.0, 0.0, 0.0
+        k = len(team_matches)
+
         for _, r in team_matches.iterrows():
             is_home = r["home_team"] == team
             home_score = int(r["home_score"])
             away_score = int(r["away_score"])
-            if is_home:
-                gs += home_score
-                gc += away_score
-                if home_score > away_score:
-                    wins += 1
-                elif home_score == away_score:
-                    draws += 1
+            team_elo = r["elo_home_pre"] if is_home else r["elo_away_pre"]
+            opp_elo = r["elo_away_pre"] if is_home else r["elo_home_pre"]
+
+            # Actual points: 1 for win, 0.5 for draw, 0 for loss
+            if home_score > away_score:
+                actual = 1.0 if is_home else 0.0
+            elif away_score > home_score:
+                actual = 0.0 if is_home else 1.0
             else:
-                gs += away_score
-                gc += home_score
-                if away_score > home_score:
-                    wins += 1
-                elif away_score == home_score:
-                    draws += 1
-        
-        n = len(team_matches)
+                actual = 0.5
+
+            expected = _elo_expected(team_elo, opp_elo)
+            perf_sum += actual - expected
+            opp_elo_sum += opp_elo
+
+            if is_home:
+                gs_sum += home_score
+                gc_sum += away_score
+            else:
+                gs_sum += away_score
+                gc_sum += home_score
+
         form[team] = {
-            "wr": wins / n,
-            "dr": draws / n,
-            "gs": gs / n,
-            "gc": gc / n,
-            "n": n,
+            "perf": perf_sum / k,
+            "opp_elo": opp_elo_sum / k,
+            "gs": gs_sum / k,
+            "gc": gc_sum / k,
+            "n": k,
         }
-    
+
     _team_form_cache = form
     return form
 
@@ -164,8 +182,8 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None):
     model, meta = _load_match_model()
     if model is not None and meta is not None and form_features is not None:
         try:
-            hf = form_features.get(home_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
-            af = form_features.get(away_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
+            hf = form_features.get(home_team, {"perf": 0, "opp_elo": elo_h, "gs": 0, "gc": 0, "n": 0})
+            af = form_features.get(away_team, {"perf": 0, "opp_elo": elo_a, "gs": 0, "gc": 0, "n": 0})
             
             # Build feature vector via shared utility (matches training data order)
             features = meta.get("features", [])

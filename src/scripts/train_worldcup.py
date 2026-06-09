@@ -97,8 +97,8 @@ def train_match_model():
 
     feature_cols = [
         "elo_home", "elo_away", "elo_diff", "elo_diff_abs",
-        "h_wr", "h_dr", "h_gs", "h_gc", "h_goal_diff", "h_n",
-        "a_wr", "a_dr", "a_gs", "a_gc", "a_goal_diff", "a_n",
+        "h_perf", "h_opp_elo", "h_gs", "h_gc", "h_goal_diff", "h_n",
+        "a_perf", "a_opp_elo", "a_gs", "a_gc", "a_goal_diff", "a_n",
         "is_friendly",
     ]
     available = [c for c in feature_cols if c in feat_df.columns]
