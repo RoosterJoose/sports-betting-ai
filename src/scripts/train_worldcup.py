@@ -37,7 +37,7 @@ def train_match_model():
     """Train multiclass model with clean temporal train/val/test split."""
     print("=" * 65)
     print("  WORLD CUP MATCH OUTCOME CLASSIFIER")
-    print("  Temporal split: train 2022 non-WC, val 2022 WC, test 2023+" )
+    print("  Temporal split: train 2018-2021, val 2022 WC, test 2023+" )
     print("=" * 65)
 
     # 1. Fetch data
@@ -88,11 +88,18 @@ def train_match_model():
     y[feat_df["away_won"] == 1] = 2
     y[feat_df["draw"] == 1] = 1
 
-    # 6. Build feature matrix
+    # 6. Build feature matrix — add derived features for draw/away prediction
+    feat_df["elo_diff_abs"] = feat_df["elo_diff"].abs()
+    feat_df["h_goal_diff"] = feat_df["h_gs"] - feat_df["h_gc"]
+    feat_df["a_goal_diff"] = feat_df["a_gs"] - feat_df["a_gc"]
+    # Tournament type: qualifier vs friendly (friendlies have more draws/upsets)
+    feat_df["is_friendly"] = feat_df.get("tournament_code", "").fillna("").str.contains("FR", case=False).astype(int)
+
     feature_cols = [
-        "elo_home", "elo_away", "elo_diff",
-        "h_wr", "h_dr", "h_gs", "h_gc", "h_n",
-        "a_wr", "a_dr", "a_gs", "a_gc", "a_n",
+        "elo_home", "elo_away", "elo_diff", "elo_diff_abs",
+        "h_wr", "h_dr", "h_gs", "h_gc", "h_goal_diff", "h_n",
+        "a_wr", "a_dr", "a_gs", "a_gc", "a_goal_diff", "a_n",
+        "is_friendly",
     ]
     available = [c for c in feature_cols if c in feat_df.columns]
     missing = [c for c in feature_cols if c not in feat_df.columns]
@@ -110,9 +117,8 @@ def train_match_model():
     dates = pd.to_datetime(feat_df["match_date"])
     tourn_code = feat_df["tournament_code"].fillna("")
 
-    # Data only goes back to 2022 — use 2022 non-WC as training
-    # Train: 2022 matches that are NOT World Cup (qualifiers, friendlies before WC)
-    train_mask = (dates.dt.year == 2022) & (tourn_code != "WC")
+    # Train: 2018-2021 (all matches before 2022 WC)
+    train_mask = (dates.dt.year >= 2018) & (dates.dt.year <= 2021)
     # Val: 2022 World Cup only
     val_mask = (dates.dt.year == 2022) & (tourn_code == "WC")
     # Test: 2023+ matches (2026 qualifiers, friendlies, etc.)
@@ -131,7 +137,7 @@ def train_match_model():
     y_test = y[test_idx]
 
     print(f"\n  Split sizes:")
-    print(f"    Train (2022 non-WC):   {len(X_train):5d}")
+    print(f"    Train (2018-2021):     {len(X_train):5d}")
     print(f"    Val   (2022 WC):    {len(X_val):5d}")
     print(f"    Test  (2023+):      {len(X_test):5d}")
 
@@ -146,20 +152,23 @@ def train_match_model():
         for i, label in enumerate(OUTCOME_LABELS):
             print(f"    {label:12s}: {counts[i]:4d} ({counts[i]/len(y_split):.1%})")
 
-    # 8. Train multiclass classifier
-    print("\n5. Training model (early stopping on 2022 WC validation)...")
+    # 8. Train multiclass classifier — NO sample weighting
+    # Previous ISNS (sqrt inverse freq) weighting over-amplified draws (2x)
+    # and away wins (3.76x), causing 60-70% draw predictions vs 25% reality.
+    # With 500 draw samples in training, the model can learn naturally.
+    print("\n5. Training model (early stopping on 2022 WC validation, no class weighting)...")
+
     model = lgb.LGBMModel(
         objective="multiclass",
         num_class=3,
         n_estimators=800,
         num_leaves=31,
-        learning_rate=0.03,
-        subsample=0.8,
-        feature_fraction=0.8,
-        reg_alpha=0.3,
-        reg_lambda=0.5,
-        min_child_samples=20,
-        # class_weight="balanced" removed — 2022 WC val has 0 away wins, crashes
+        learning_rate=0.02,
+        subsample=0.75,
+        feature_fraction=0.75,
+        reg_alpha=1.0,
+        reg_lambda=2.0,
+        min_child_samples=50,
         random_state=42,
         verbosity=-1,
     )
@@ -213,29 +222,8 @@ def train_match_model():
     for _, r in imp.head(8).iterrows():
         print(f"    {r['feature']:12s} {r['importance']}")
 
-    # 11. Calibration from validation set (2022 WC)
-    print("\n6. Saving calibration (from 2022 WC validation set)...")
-    for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
-        cal_table = []
-        class_preds = preds_val[:, cls_idx]
-        class_actual = (y_val == cls_idx).astype(int)
-        for lo in np.arange(0, 1.0, 0.05):
-            hi = min(lo + 0.05, 1.0)
-            mask = (class_preds >= lo) & (class_preds < hi)
-            if mask.sum() >= 3:
-                cal_table.append({
-                    "p_pred_min": float(lo),
-                    "p_pred_max": float(hi),
-                    "p_actual": float(class_actual[mask].mean()),
-                    "n": int(mask.sum()),
-                })
-        cal_path = CALIB_DIR / f"wc_{cls_name}_empirical.json"
-        with open(cal_path, "w") as f:
-            json.dump({"0": {"bins": cal_table}}, f, indent=2)
-        print(f"    Saved {cal_path.name} ({len(cal_table)} bins)")
-
-    # Also save train calibration for reference
-    print("  Saving training calibration (pre-2022)...")
+    # 11. Calibration from TRAINING set (2,635 matches — val set only has 57, too noisy)
+    print("\n6. Saving calibration (from training set, ~2.6K matches)...")
     for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
         cal_table = []
         class_preds = preds_train[:, cls_idx]
@@ -250,7 +238,28 @@ def train_match_model():
                     "p_actual": float(class_actual[mask].mean()),
                     "n": int(mask.sum()),
                 })
-        cal_path = CALIB_DIR / f"wc_{cls_name}_train_empirical.json"
+        cal_path = CALIB_DIR / f"wc_{cls_name}_empirical.json"
+        with open(cal_path, "w") as f:
+            json.dump({"0": {"bins": cal_table}}, f, indent=2)
+        print(f"    Saved {cal_path.name} ({len(cal_table)} bins)")
+
+    # Also save val calibration for reference (57 matches — noisy, reference only)
+    print("  Saving val calibration (2022 WC, 57 matches — reference only)...")
+    for cls_idx, cls_name in enumerate(["home", "draw", "away"]):
+        cal_table = []
+        class_preds = preds_val[:, cls_idx]
+        class_actual = (y_val == cls_idx).astype(int)
+        for lo in np.arange(0, 1.0, 0.05):
+            hi = min(lo + 0.05, 1.0)
+            mask = (class_preds >= lo) & (class_preds < hi)
+            if mask.sum() >= 3:
+                cal_table.append({
+                    "p_pred_min": float(lo),
+                    "p_pred_max": float(hi),
+                    "p_actual": float(class_actual[mask].mean()),
+                    "n": int(mask.sum()),
+                })
+        cal_path = CALIB_DIR / f"wc_{cls_name}_val_empirical.json"
         with open(cal_path, "w") as f:
             json.dump({"0": {"bins": cal_table}}, f, indent=2)
 

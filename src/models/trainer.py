@@ -59,6 +59,7 @@ class ModelTrainer:
 
         mae = mean_absolute_error(y_test, y_pred)
         r2 = r2_score(y_test, y_pred)
+        residual_std = float(np.std(y_test.values - y_pred))
 
         # Post-hoc directional accuracy: does predicted > trailing_avg match actual > trailing_avg?
         # The "trailing_avg" is the prior expanding mean (what a naive model would predict)
@@ -85,6 +86,7 @@ class ModelTrainer:
             "stat_type": self.stat_type,
             "mae": round(mae, 4),
             "r2": round(r2, 4),
+            "residual_std": round(residual_std, 4),
             "directional_accuracy": round(direction_accuracy, 4),
             "train_samples": len(X_train),
             "test_samples": len(X_test),

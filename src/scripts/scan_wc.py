@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 
 from src.data.kalshi import KalshiClient
 from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_teams,
-                                  get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO)
+                                  get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO,
+                                  build_feature_vector)
 from src.models.calibrator import EmpiricalCalibrator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -113,7 +114,7 @@ def _build_form_features(elo_df, elo_ratings):
     for team, elo in elo_ratings.items():
         # Get recent matches involving this team
         team_matches = elo_df[(elo_df["home_team"] == team) | (elo_df["away_team"] == team)]
-        team_matches = team_matches.sort_values("match_date").tail(10)
+        team_matches = team_matches.sort_values("match_date").tail(5)  # match training data (n=5)
         
         if team_matches.empty:
             form[team] = {"wr": 0.0, "dr": 0.0, "gs": 0.0, "gc": 0.0, "n": 0}
@@ -166,26 +167,9 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None):
             hf = form_features.get(home_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
             af = form_features.get(away_team, {"wr": 0, "dr": 0, "gs": 0, "gc": 0, "n": 0})
             
-            # Build feature vector matching training features
+            # Build feature vector via shared utility (matches training data order)
             features = meta.get("features", [])
-            vec = {}
-            for c in features:
-                if c == "elo_home":
-                    vec[c] = elo_h
-                elif c == "elo_away":
-                    vec[c] = elo_a
-                elif c == "elo_diff":
-                    vec[c] = elo_h - elo_a
-                elif c in ("h_wr", "h_dr", "h_gs", "h_gc", "h_n"):
-                    key = c[2:]  # strip 'h_' prefix
-                    vec[c] = hf.get(key, 0)
-                elif c in ("a_wr", "a_dr", "a_gs", "a_gc", "a_n"):
-                    key = c[2:]  # strip 'a_' prefix
-                    vec[c] = af.get(key, 0)
-                else:
-                    vec[c] = 0
-            
-            x = np.array([vec.get(c, 0) for c in features]).reshape(1, -1).astype(float)
+            x = build_feature_vector(elo_h, elo_a, hf, af, None, features)
             probs = model.predict(x)[0]
             
             # Apply empirical calibration if available

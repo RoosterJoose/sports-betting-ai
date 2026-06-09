@@ -59,7 +59,7 @@ def _get_team_code_map():
 def _code_to_name(code):
     return _get_team_code_map().get(code, code)
 
-YEARS_TO_FETCH = [2022, 2023, 2024, 2025, 2026]
+YEARS_TO_FETCH = [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 COLUMNS = ["year","month","day","team1","team2","score1","score2","tournament",
            "venue","elo_change1","elo1","elo2","elo_change2","rank_change1","rank_change2"]
@@ -289,7 +289,61 @@ def get_known_elo_teams(elo_df):
     return teams
 
 
-def prepare_training_data(force_refetch=False):
+def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
+    """Build a model-ready feature vector from Elo ratings and form dictionaries.
+
+    Shared by backtest_wc.py and scan_wc.py.  The *features* list must match
+    the ordered column names the model was trained on (stored in the model
+    metadata file, e.g. ``wc_match_outcome.meta.json``).
+
+    Parameters
+    ----------
+    elo_home : float
+        Home team's Elo rating (raw, e.g. 1850).
+    elo_away : float
+        Away team's Elo rating.
+    hf : dict
+        Home team recent form: ``{"wr", "dr", "gs", "gc", "n"}``.
+    af : dict
+        Away team recent form.
+    tournament_code : str | None
+        Tournament code for the match (e.g. ``"WC"``, ``"FR"`` for friendly).
+    features : list[str]
+        Ordered list of feature names the model expects.
+
+    Returns
+    -------
+    np.ndarray
+        Feature vector shaped ``(1, len(features))`` ready for ``model.predict()``.
+    """
+    elo_diff = elo_home - elo_away
+    tc = str(tournament_code or "").upper()
+    is_friendly = 1 if "FR" in tc else 0
+
+    vec = {}
+    for c in features:
+        if c == "elo_home":
+            vec[c] = elo_home
+        elif c == "elo_away":
+            vec[c] = elo_away
+        elif c == "elo_diff":
+            vec[c] = elo_diff
+        elif c == "elo_diff_abs":
+            vec[c] = abs(elo_diff)
+        elif c in ("h_wr", "h_dr", "h_gs", "h_gc", "h_n"):
+            vec[c] = hf.get(c[2:], 0)
+        elif c in ("a_wr", "a_dr", "a_gs", "a_gc", "a_n"):
+            vec[c] = af.get(c[2:], 0)
+        elif c == "h_goal_diff":
+            vec[c] = hf.get("gs", 0) - hf.get("gc", 0)
+        elif c == "a_goal_diff":
+            vec[c] = af.get("gs", 0) - af.get("gc", 0)
+        elif c == "is_friendly":
+            vec[c] = is_friendly
+        else:
+            vec[c] = 0
+
+    return np.array([vec.get(c, 0) for c in features], dtype=float).reshape(1, -1)
     df = fetch_all_matches(force_refetch)
     if df.empty:
         return None, None, None

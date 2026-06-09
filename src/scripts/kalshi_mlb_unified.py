@@ -153,7 +153,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*runs?\??$",
         "desc": "runs",
-        "info_only": False,
+        "info_only": True,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
     {
@@ -173,7 +173,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*stolen\s*bases?\??$",
         "desc": "stolen bases",
-        "info_only": False,
+        "info_only": True,
         "pattern_note": "unverified — update when Kalshi lists these markets",
     },
 ]

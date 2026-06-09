@@ -24,9 +24,32 @@ from src.data.kalshi import KalshiClient
 from src.utils.trade_tracker import TradeTracker
 
 
+def _safe_float(val, default=0.0):
+    """Safely convert a value to float, handling empty strings and None."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        if pd.isna(val):
+            return default
+        return float(val)
+    s = str(val).strip()
+    if s == "" or s.lower() == "none" or s.lower() == "nan":
+        return default
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 def resolve_pending_trades(sport: str = None, model_name: str = None,
                            report_only: bool = False) -> dict:
-    """Resolve pending trades by checking Kalshi settlement prices."""
+    """Resolve pending trades by checking Kalshi settlement prices.
+
+    Batches by ticker prefix (first 2 segments, e.g. "KXMLBKS-25JUN08") to
+    minimize API calls.  Makes one list_markets call per unique prefix,
+    then matches individual tickers against the returned markets.
+    """
+    import time
     kc = KalshiClient()
     tt = TradeTracker()
 
@@ -52,15 +75,51 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
         return {"resolved": 0, "message": "No pending trades found"}
 
     print(f"Found {len(pending)} pending trades to resolve")
+
+    # ──  Batch by ticker prefix (first 2 dash-segments) ──────────────
+    def _ticker_prefix(t):
+        parts = str(t).split("-")
+        if len(parts) >= 2:
+            return "-".join(parts[:2])
+        return str(t)
+
+    pending["_prefix"] = pending["ticker"].apply(_ticker_prefix)
+    prefixes = pending["_prefix"].unique()
+    print(f"  {len(prefixes)} unique ticker prefixes → {len(prefixes)} API calls")
+
+    # ──  Fetch markets for each prefix, build ticker→market lookup ───
+    print(f"  Fetching markets...", end=" ", flush=True)
+    mkts_by_prefix = {}
+    market_lookup = {}  # ticker → market row
+    not_found_prefixes = 0
+    for i, pfx in enumerate(prefixes):
+        try:
+            # Use series_ticker param — first segment is the series
+            series = pfx.split("-")[0] if "-" in pfx else pfx
+            mkts = kc.list_markets(series_ticker=series, limit=1000)
+            if mkts is not None and not mkts.empty:
+                mkts_by_prefix[pfx] = mkts
+                for _, m in mkts.iterrows():
+                    t = str(m.get("ticker", ""))
+                    if t:
+                        market_lookup[t] = m
+            else:
+                not_found_prefixes += 1
+        except Exception:
+            not_found_prefixes += 1
+        if (i + 1) % 10 == 0:
+            print(f"{i+1}/{len(prefixes)}...", end=" ", flush=True)
+            time.sleep(0.5)  # rate limit
+    print(f"done ({len(market_lookup)} markets indexed, {not_found_prefixes} prefixes not found)", flush=True)
     print(f"{'='*80}")
 
+    # ──  Resolve each trade ──────────────────────────────────────────
     resolved = 0
     skipped = 0
     win_count = 0
     loss_count = 0
     total_pnl = 0.0
     total_volume = 0.0
-    results = []
 
     for _, row in pending.iterrows():
         ticker = row["ticker"]
@@ -71,81 +130,51 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
         sport_s = row["sport"]
         model = row["model_name"]
         live = row["live"]
-        notes = ""
 
-        # Skip trades that are too recent (placed today, not resolved yet)
-        # Skip — we'll check the market status
-
-        # Check Kalshi market status
-        try:
-            mkts = kc.list_markets(ticker_prefix=ticker, limit=5)
-        except Exception:
-            mkts = pd.DataFrame()
-
-        if mkts is None or mkts.empty:
-            # Market may have been settled and removed from active markets
-            # Try to check portfolio positions for this ticker
-            try:
-                positions = kc.get_positions()
-                pos = positions[positions["ticker"] == ticker]
-                if not pos.empty:
-                    # Still an open position — not settled
-                    skipped += 1
-                    continue
-            except Exception:
-                pass
-            # Can't determine — skip
+        # Look up market from batched cache
+        mkt = market_lookup.get(ticker)
+        if mkt is None:
             skipped += 1
-            notes = "market not found"
             continue
 
         # Check if market has settled
-        mkt = mkts.iloc[0]
-        # Kalshi markets have a 'result' field or 'status' field when settled
         result = mkt.get("result", None)
-        status = mkt.get("status", "")
+        status = str(mkt.get("status", "")).strip()
         settle_price = mkt.get("settlement_price", None)
 
-        # If still trading, check if yes_bid and yes_ask are at extremes
-        # (settled markets often show 1.0 or 0.0 for both)
-        yes_bid = float(mkt.get("yes_bid_dollars", 0) or 0)
-        yes_ask = float(mkt.get("yes_ask_dollars", 0) or 0)
-        yes_mid = (yes_bid + yes_ask) / 2.0
+        yes_bid = _safe_float(mkt.get("yes_bid_dollars", 0), default=0.0)
+        yes_ask = _safe_float(mkt.get("yes_ask_dollars", 0), default=0.0)
 
         # Determine if settled
         is_settled = False
         won = None
 
-        if result is not None:
-            # Direct result field (1 = YES won, 0 = NO won)
+        if result is not None and str(result).strip() not in ("", "none", "None"):
             is_settled = True
-            won = (result == 1) if side == "yes" else (result == 0)
-            settle_price_f = float(result)
-        elif status in ("settled", "closed"):
+            result_f = _safe_float(result, default=0.0)
+            won = (result_f >= 0.5) if side == "yes" else (result_f < 0.5)
+            settle_price_f = result_f
+        elif status.lower() in ("settled", "closed"):
             is_settled = True
-            if settle_price is not None:
-                settle_price_f = float(settle_price)
+            if settle_price is not None and str(settle_price).strip() not in ("", "none", "None"):
+                settle_price_f = _safe_float(settle_price, default=0.5)
                 won = (settle_price_f >= 0.5) if side == "yes" else (settle_price_f < 0.5)
             else:
-                won = None  # Unknown settlement
+                won = None
         elif yes_bid == 0 and yes_ask == 0:
-            # Both zero = likely not a valid quote, could be settled to 0
             is_settled = True
             won = False if side == "yes" else True
             settle_price_f = 0.0
         elif yes_bid >= 0.99 and yes_ask >= 0.99:
-            # Both at 1.0 = settled YES
             is_settled = True
             won = True if side == "yes" else False
             settle_price_f = 1.0
         else:
-            # Market still active
             skipped += 1
             continue
 
         if not is_settled or won is None:
             skipped += 1
-            notes = "cannot determine settlement"
             continue
 
         # Compute P&L
@@ -154,7 +183,7 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
                 pnl = size * (settle_price_f - price_cents / 100.0)
             else:
                 pnl = -size * (price_cents / 100.0)
-        else:  # no side
+        else:
             if won:
                 pnl = size * (price_cents / 100.0 - settle_price_f)
             else:
@@ -173,18 +202,6 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
         total_pnl += pnl
         total_volume += (price_cents / 100.0) * size
         resolved += 1
-        results.append({
-            "id": tid,
-            "ticker": ticker,
-            "sport": sport_s,
-            "model": model,
-            "side": side,
-            "price": price_cents,
-            "size": size,
-            "settle": settle_price_f,
-            "won": won,
-            "pnl": round(pnl, 2),
-        })
 
         edge_str = f"{row['edge']:.0%}"
         vol_str = f"${(price_cents/100)*size:.2f}"

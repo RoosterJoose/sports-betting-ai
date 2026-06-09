@@ -2,24 +2,365 @@
   No pending trades resolved (all still active)
 ========================================================================
 ========================================================================
-  END-OF-DAY ANALYSIS — 2026-06-08 08:26
+  END-OF-DAY ANALYSIS — 2026-06-08 20:29
 ========================================================================
 
-  Summary: 0 resolved, 212 pending (102 live)
-  Database: 212 total trades
+  Summary: 5032 resolved, 26 pending (102 live)
+  Database: 5058 total trades
+
+  ──────────────────────────────────────────────────────────────────────
+  MODEL PERFORMANCE
+  ──────────────────────────────────────────────────────────────────────
+  Model                              N  Wins    WR%   ROI% Avg Edge  Avg PnL
+  ------------------------------ ----- ----- ------ ------ -------- --------
+  mlb/HRR                         1273     5   0.4% -99.0%   19.6% $ -0.39
+  mlb/TB                           744     1   0.1% -99.5%   29.7% $ -0.27
+  world_cup/WC                     632     0   0.0% -100.0%   38.1% $ -0.10
+  nba/BLK                          427     0   0.0% -100.0%  -21.6% $ -0.48
+  nba/STL                          353     0   0.0% -100.0%   -8.6% $ -0.43
+  mlb/KS                           352    10   2.8% -92.3%   16.2% $ -0.34
+  nba/AST                          264     0   0.0% -100.0%   -6.6% $ -0.38
+  nba/3PT                          147     0   0.0% -100.0%    0.8% $ -0.30
+  mlb/ks                           141     0   0.0% -100.0%   16.8% $ -0.49
+  nba/REB                          116     0   0.0% -100.0%   -6.4% $ -0.42
+  mlb/HR                           112     0   0.0% -100.0%    8.3% $ -0.15
+  wnba/WNBA-PTS                     94     0   0.0% -100.0%    0.0% $ -0.43
+  wnba/WNBA-REB                     78     0   0.0% -100.0%    0.0% $ -0.53
+  nba/PTS                           76     0   0.0% -100.0%   -1.4% $ -0.32
+  wc/wc_elo                         41     0   0.0% -100.0%   32.9% $ -0.17
+  wnba/WNBA-3PT                     40     0   0.0% -100.0%    0.0% $ -0.35
+  nba/2D                            27     0   0.0% -100.0%    0.0% $ -0.23
+  mlb/COMP                          24    24 100.0% 100.0%   63.7% $ +0.17
+  mlb/F5                            24     0   0.0% -100.0%   16.2% $ -0.49
+  nascar/top10                      21     0   0.0% -100.0%   13.5% $ -2.90
+  wnba/WNBA-AST                     20     0   0.0% -100.0%    0.0% $ -0.46
+  nba/FTM                           11     0   0.0% -100.0%  -13.7% $ -0.42
+  nba/3D                             6     0   0.0% -11.0%    0.0% $ -0.02
+  nascar/top20                       3     0   0.0% -100.0%   12.3% $ -2.86
+  nascar/top5                        3     0   0.0% -100.0%    5.6% $ -3.00
+  mlb/f5                             2     0   0.0% -84.0%   27.7% $ -0.42
+  nascar/top3                        1     0   0.0% -100.0%    5.0% $ -2.97
+
+  🔴 Worst performers:
+     nba/3D                   n=  6 wr=0% roi=-11.0%
+     mlb/f5                   n=  2 wr=0% roi=-84.0%
+     nascar/top3                 n=  1 wr=0% roi=-100.0%
+
+  🟢 Best performers:
+     mlb/COMP                 n= 24 wr=100% roi=100.0%
+     mlb/KS                   n=352 wr=3% roi=-92.3%
+     mlb/HRR                  n=1273 wr=0% roi=-99.0%
 
   ──────────────────────────────────────────────────────────────────────
   CALIBRATION ANALYSIS
   ──────────────────────────────────────────────────────────────────────
+  STL                  bias=+37.9% brier=0.188 n= 353 [OVERCONFIDENT]
+        → Systematically overconfident by 37.9% across 10 bins. Most severe at pred=72% (actual=0%, error=+72.2%). Consider recalibrating.
+  wc_elo               bias=+50.0% brier=0.250 n=  41 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  COMP                 bias=-16.3% brier=0.027 n=  24 [UNDERCONFIDENT]
+        → Systematically underconfident by 16.3% across 3 bins. Winning more than predicted.
+  KS                   bias=+52.7% brier=0.317 n= 352 [OVERCONFIDENT]
+        → Systematically overconfident by 52.7% across 10 bins. Most severe at pred=91% (actual=8%, error=+83.6%). Consider recalibrating.
+  WNBA-AST             bias=+50.0% brier=0.250 n=  20 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  top10                bias=+30.3% brier=0.092 n=  21 [OVERCONFIDENT]
+        → Systematically overconfident by 30.3% across 4 bins. Most severe at pred=32% (actual=0%, error=+32.3%). Consider recalibrating.
+  BLK                  bias=+37.7% brier=0.189 n= 427 [OVERCONFIDENT]
+        → Systematically overconfident by 37.7% across 9 bins. Most severe at pred=71% (actual=0%, error=+71.2%). Consider recalibrating.
+  HRR                  bias=+50.2% brier=0.288 n=1273 [OVERCONFIDENT]
+        → Systematically overconfident by 50.2% across 10 bins. Most severe at pred=80% (actual=2%, error=+77.9%). Consider recalibrating.
+  WNBA-REB             bias=+50.0% brier=0.250 n=  78 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  ks                   bias=+49.4% brier=0.270 n= 141 [OVERCONFIDENT]
+        → Systematically overconfident by 49.4% across 9 bins. Most severe at pred=75% (actual=0%, error=+74.9%). Consider recalibrating.
+  REB                  bias=+37.1% brier=0.187 n= 116 [OVERCONFIDENT]
+        → Systematically overconfident by 37.1% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.2%). Consider recalibrating.
+  3PT                  bias=+37.4% brier=0.192 n= 147 [OVERCONFIDENT]
+        → Systematically overconfident by 37.4% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.5%). Consider recalibrating.
+  FTM                  bias=+35.5% brier=0.183 n=  11 [OVERCONFIDENT]
+        → Systematically overconfident by 35.5% across 5 bins. Most severe at pred=75% (actual=0%, error=+75.0%). Consider recalibrating.
+  PTS                  bias=+37.8% brier=0.192 n=  76 [OVERCONFIDENT]
+        → Systematically overconfident by 37.8% across 9 bins. Most severe at pred=73% (actual=0%, error=+73.4%). Consider recalibrating.
+  AST                  bias=+37.1% brier=0.187 n= 264 [OVERCONFIDENT]
+        → Systematically overconfident by 37.1% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.4%). Consider recalibrating.
+  TB                   bias=+46.8% brier=0.246 n= 744 [OVERCONFIDENT]
+        → Systematically overconfident by 46.8% across 10 bins. Most severe at pred=75% (actual=0%, error=+74.5%). Consider recalibrating.
+  HR                   bias=+24.5% brier=0.063 n= 112 [OVERCONFIDENT]
+        → Systematically overconfident by 24.5% across 8 bins. Most severe at pred=33% (actual=0%, error=+33.1%). Consider recalibrating.
+  3D                   bias=+50.0% brier=0.250 n=   6 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  WNBA-PTS             bias=+50.0% brier=0.250 n=  94 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  2D                   bias=+50.0% brier=0.250 n=  27 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  WC                   bias=+57.1% brier=0.357 n= 632 [OVERCONFIDENT]
+        → Systematically overconfident by 57.1% across 10 bins. Most severe at pred=85% (actual=0%, error=+85.2%). Consider recalibrating.
+  F5                   bias=+65.7% brier=0.436 n=  24 [OVERCONFIDENT]
+        → Systematically overconfident by 65.7% across 3 bins. Most severe at pred=74% (actual=0%, error=+74.4%). Consider recalibrating.
+  WNBA-3PT             bias=+50.0% brier=0.250 n=  40 [OVERCONFIDENT]
+        → Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
 
   ──────────────────────────────────────────────────────────────────────
   EDGE EFFECTIVENESS
   ──────────────────────────────────────────────────────────────────────
+  STL                 :
+     5%       → 0% (n=30)
+     10%      → 0% (n=42)
+     15%      → 0% (n=25)
+     20%      → 0% (n=19)
+     30%      → 0% (n=41)
+     30%+     → 0% (n=21)
+        → Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  wc_elo              :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → 0% (n=18)
+     30%+     → 0% (n=23)
+        → Best edge bin '30%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  COMP                :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → 100% (n=24)
+        → Edge bin '30%+' achieves 100% win rate (n=24). 
+  KS                  :
+     5%       → 0% (n=2)
+     10%      → 1% (n=107)
+     15%      → 1% (n=78)
+     20%      → 4% (n=78)
+     30%      → 0% (n=37)
+     30%+     → 10% (n=50)
+        → Best edge bin '30%+' only achieves 10% win rate. No edge level is profitable. Models may need fundamental retraining.
+  WNBA-AST            :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+  top10               :
+     5%       → nan% (n=0)
+     10%      → 0% (n=4)
+     15%      → 0% (n=8)
+     20%      → 0% (n=9)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+  BLK                 :
+     5%       → 0% (n=20)
+     10%      → 0% (n=26)
+     15%      → 0% (n=16)
+     20%      → 0% (n=20)
+     30%      → 0% (n=20)
+     30%+     → 0% (n=19)
+        → Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  HRR                 :
+     5%       → 0% (n=2)
+     10%      → 1% (n=350)
+     15%      → 0% (n=236)
+     20%      → 0% (n=180)
+     30%      → 0% (n=240)
+     30%+     → 0% (n=265)
+        → Best edge bin '10%' only achieves 1% win rate. No edge level is profitable. Models may need fundamental retraining.
+  WNBA-REB            :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+  ks                  :
+     5%       → nan% (n=0)
+     10%      → 0% (n=47)
+     15%      → 0% (n=33)
+     20%      → 0% (n=10)
+     30%      → 0% (n=31)
+     30%+     → 0% (n=20)
+        → Best edge bin '10%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  REB                 :
+     5%       → 0% (n=12)
+     10%      → 0% (n=10)
+     15%      → 0% (n=4)
+     20%      → 0% (n=5)
+     30%      → 0% (n=7)
+     30%+     → 0% (n=7)
+        → Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  3PT                 :
+     5%       → 0% (n=16)
+     10%      → 0% (n=11)
+     15%      → 0% (n=9)
+     20%      → 0% (n=5)
+     30%      → 0% (n=4)
+     30%+     → 0% (n=13)
+        → Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  PTS                 :
+     5%       → 0% (n=6)
+     10%      → 0% (n=9)
+     15%      → 0% (n=6)
+     20%      → 0% (n=5)
+     30%      → nan% (n=0)
+     30%+     → 0% (n=1)
+  AST                 :
+     5%       → 0% (n=34)
+     10%      → 0% (n=22)
+     15%      → 0% (n=10)
+     20%      → 0% (n=12)
+     30%      → 0% (n=12)
+     30%+     → 0% (n=29)
+        → Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  TB                  :
+     5%       → nan% (n=0)
+     10%      → 0% (n=125)
+     15%      → 0% (n=64)
+     20%      → 0% (n=53)
+     30%      → 0% (n=137)
+     30%+     → 0% (n=365)
+        → Best edge bin '30%+' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  HR                  :
+     5%       → nan% (n=0)
+     10%      → 0% (n=86)
+     15%      → 0% (n=26)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+        → Best edge bin '10%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  WNBA-PTS            :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+  2D                  :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+  WC                  :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → 0% (n=158)
+     20%      → 0% (n=42)
+     30%      → 0% (n=84)
+     30%+     → 0% (n=348)
+        → Best edge bin '15%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  F5                  :
+     5%       → nan% (n=0)
+     10%      → 0% (n=6)
+     15%      → 0% (n=6)
+     20%      → 0% (n=4)
+     30%      → 0% (n=8)
+     30%+     → nan% (n=0)
+  WNBA-3PT            :
+     5%       → nan% (n=0)
+     10%      → nan% (n=0)
+     15%      → nan% (n=0)
+     20%      → nan% (n=0)
+     30%      → nan% (n=0)
+     30%+     → nan% (n=0)
+
+  ──────────────────────────────────────────────────────────────────────
+  MARKET PRICE PERFORMANCE
+  ──────────────────────────────────────────────────────────────────────
+     0-10¢        → 0% (n=554)
+     10-25¢       → 2% (n=1463)
+     25-40¢       → 0% (n=1041)
+     40-50¢       → 1% (n=675)
+     50-60¢       → 1% (n=431)
+     60-75¢       → 1% (n=475)
+     75-100¢      → 0% (n=393)
+     → Price range '0-10¢' has 0% win rate (n=554). Consider filtering this range.
 
   ──────────────────────────────────────────────────────────────────────
   LEARNINGS & RECOMMENDATIONS
   ──────────────────────────────────────────────────────────────────────
-  • No actionable insights yet — need more resolved trades
+  • [wnba/WNBA-REB] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [wnba/WNBA-AST] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [wnba/WNBA-PTS] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [wnba/WNBA-3PT] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [wnba] Price range '0-10¢' has 0% win rate (n=14). Consider filtering this range.
+  • [mlb/ks] Systematically overconfident by 49.4% across 9 bins. Most severe at pred=75% (actual=0%, error=+74.9%). Consider recalibrating.
+  • [mlb/ks] Best edge bin '10%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [mlb/f5] Systematically overconfident by 70.3% across 2 bins. Most severe at pred=84% (actual=0%, error=+84.4%). Consider recalibrating.
+  • [mlb/f5] Insufficient resolved trades (2) for edge analysis
+  • [mlb/COMP] Systematically underconfident by 16.3% across 3 bins. Winning more than predicted.
+  • [mlb/COMP] Edge bin '30%+' achieves 100% win rate (n=24). 
+  • [mlb/F5] Systematically overconfident by 65.7% across 3 bins. Most severe at pred=74% (actual=0%, error=+74.4%). Consider recalibrating.
+  • [mlb/KS] Systematically overconfident by 52.7% across 10 bins. Most severe at pred=91% (actual=8%, error=+83.6%). Consider recalibrating.
+  • [mlb/KS] Best edge bin '30%+' only achieves 10% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [mlb/TB] Systematically overconfident by 46.8% across 10 bins. Most severe at pred=75% (actual=0%, error=+74.5%). Consider recalibrating.
+  • [mlb/TB] Best edge bin '30%+' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [mlb/HR] Systematically overconfident by 24.5% across 8 bins. Most severe at pred=33% (actual=0%, error=+33.1%). Consider recalibrating.
+  • [mlb/HR] Best edge bin '10%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [mlb/HRR] Systematically overconfident by 50.2% across 10 bins. Most severe at pred=80% (actual=2%, error=+77.9%). Consider recalibrating.
+  • [mlb/HRR] Best edge bin '10%' only achieves 1% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [mlb] Price range '0-10¢' has 0% win rate (n=74). Consider filtering this range.
+  • [wc/wc_elo] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [wc/wc_elo] Best edge bin '30%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [wc] Price range '0-10¢' has 0% win rate (n=6). Consider filtering this range.
+  • [nba/REB] Systematically overconfident by 37.1% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.2%). Consider recalibrating.
+  • [nba/REB] Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [nba/2D] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [nba/STL] Systematically overconfident by 37.9% across 10 bins. Most severe at pred=72% (actual=0%, error=+72.2%). Consider recalibrating.
+  • [nba/STL] Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [nba/3PT] Systematically overconfident by 37.4% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.5%). Consider recalibrating.
+  • [nba/3PT] Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [nba/FTM] Systematically overconfident by 35.5% across 5 bins. Most severe at pred=75% (actual=0%, error=+75.0%). Consider recalibrating.
+  • [nba/FTM] Insufficient resolved trades (11) for edge analysis
+  • [nba/PTS] Systematically overconfident by 37.8% across 9 bins. Most severe at pred=73% (actual=0%, error=+73.4%). Consider recalibrating.
+  • [nba/AST] Systematically overconfident by 37.1% across 9 bins. Most severe at pred=74% (actual=0%, error=+74.4%). Consider recalibrating.
+  • [nba/AST] Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [nba/3D] Systematically overconfident by 50.0% across 1 bins. Most severe at pred=50% (actual=0%, error=+50.0%). Consider recalibrating.
+  • [nba/3D] Insufficient resolved trades (6) for edge analysis
+  • [nba/BLK] Systematically overconfident by 37.7% across 9 bins. Most severe at pred=71% (actual=0%, error=+71.2%). Consider recalibrating.
+  • [nba/BLK] Best edge bin '5%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [nba] Price range '0-10¢' has 0% win rate (n=417). Consider filtering this range.
+  • [world_cup/WC] Systematically overconfident by 57.1% across 10 bins. Most severe at pred=85% (actual=0%, error=+85.2%). Consider recalibrating.
+  • [world_cup/WC] Best edge bin '15%' only achieves 0% win rate. No edge level is profitable. Models may need fundamental retraining.
+  • [world_cup] Price range '0-10¢' has 0% win rate (n=40). Consider filtering this range.
+  • [nascar/top3] Systematically overconfident by 16.0% across 1 bins. Most severe at pred=16% (actual=0%, error=+16.0%). Consider recalibrating.
+  • [nascar/top3] Insufficient resolved trades (1) for edge analysis
+  • [nascar/top5] Systematically overconfident by 15.6% across 3 bins. Most severe at pred=16% (actual=0%, error=+15.9%). Consider recalibrating.
+  • [nascar/top5] Insufficient resolved trades (3) for edge analysis
+  • [nascar/top10] Systematically overconfident by 30.3% across 4 bins. Most severe at pred=32% (actual=0%, error=+32.3%). Consider recalibrating.
+  • [nascar/top20] Systematically overconfident by 29.9% across 2 bins. Most severe at pred=32% (actual=0%, error=+32.1%). Consider recalibrating.
+  • [nascar/top20] Insufficient resolved trades (3) for edge analysis
+  • [nascar] Price range '10-25¢' has 0% win rate (n=25). Consider filtering this range.
+  • [nba/FTM] 11 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/2D] 27 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [wc/wc_elo] 41 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [wnba/WNBA-AST] 20 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/F5] 24 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [wnba/WNBA-3PT] 40 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/HR] 112 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/PTS] 76 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [wnba/WNBA-PTS] 94 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [wnba/WNBA-REB] 78 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/3PT] 147 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/REB] 116 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nascar/top10] 21 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [world_cup/WC] 632 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/ks] 141 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/AST] 264 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/KS] 352 trades at 3% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/STL] 353 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/TB] 744 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [nba/BLK] 427 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+  • [mlb/HRR] 1273 trades at 0% win rate. Model is worse than guessing. Evaluate: poor calibration, wrong features, or data leakage?
+
+  Auto-applied fixes:
+  ✓ Added price filter recommendation for next scan config
+  ✓ Added price filter recommendation for next scan config
+  ✓ Added price filter recommendation for next scan config
+  ✓ Added price filter recommendation for next scan config
+  ✓ Added price filter recommendation for next scan config
+  ✓ Added price filter recommendation for next scan config
 
 ========================================================================
   ANALYSIS COMPLETE
