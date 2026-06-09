@@ -196,6 +196,63 @@ def _load_regressor(model_name: str):
     return model, float(std), feature_names, beta_cal
 
 
+def _parse_ticker_date(ticker: str):
+    """Extract game date from Kalshi ticker like KXNBABLK-26MAY06MINSAS-...
+    Returns datetime.date or None.
+    """
+    import re as _re
+    m = _re.search(r'(\d{2})([A-Z]{3})(\d{2})', ticker)
+    if m:
+        yr, mo, dy = m.group(1), m.group(2), m.group(3)
+        month_map = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+        }
+        month = month_map.get(mo.upper())
+        if month:
+            from datetime import date
+            try:
+                return date(2000 + int(yr), month, int(dy))
+            except ValueError:
+                return None
+    return None
+
+
+def _is_current_market(ticker: str, today=None, window_before=1, window_after=3):
+    """Check if a Kalshi market ticker is for a current/recent game.
+
+    Filters out stale markets (e.g., May dates during June Finals).
+    Allows markets from `window_before` days ago through `window_after` days ahead.
+    """
+    from datetime import date, timedelta
+    game_date = _parse_ticker_date(ticker)
+    if game_date is None:
+        return True  # can't parse — let it through
+    if today is None:
+        today = date.today()
+    cutoff_early = today - timedelta(days=window_before)
+    cutoff_late = today + timedelta(days=window_after)
+    return cutoff_early <= game_date <= cutoff_late
+
+
+def _parse_kalshi_title(title: str, desc: str):
+    """Extract player name and line value from Kalshi title.
+
+    Titles follow format: "Player Name: NN+ stat_desc" or "Player Name: stat_desc"
+    Returns (player_name, line_val) or (None, None) on failure.
+    """
+    if not title or ":" not in title:
+        return None, None
+    parts = title.split(":", 1)
+    player_name = parts[0].strip()
+    suffix = parts[1].strip()
+    # Extract line value: look for digit pattern before the stat desc
+    import re as _re
+    m = _re.search(r'(\d+)\s*\+?', suffix)
+    line_val = int(m.group(1)) if m else None
+    return player_name, line_val
+
+
 def _match_player(title: str, latest: pd.DataFrame) -> pd.Series:
     """Match player name from Kalshi title to NBA feature data."""
     if not title or latest is None or latest.empty:
@@ -259,7 +316,7 @@ def _p_ge_line(row, model, residual_std, line_val, feature_names, stat_name="", 
         z = _norm.ppf(p_raw)
         p_corrected = _norm.cdf(z - WANG_LAMBDA)
 
-    p_corrected = min(0.75, float(p_corrected))
+    p_corrected = min(0.999, float(p_corrected))
     return max(0.001, p_corrected), float(mu)
 
 
@@ -321,7 +378,8 @@ def main():
     args = parser.parse_args()
 
     client = KalshiClient()
-    print(f"Balance: ${client.get_balance():.2f}\n")
+    balance = client.get_balance()
+    print(f"Balance: ${balance:.2f}\n")
 
     # Load features
     latest = load_features()
@@ -329,7 +387,6 @@ def main():
         print("No feature data. Run data pipeline first.")
         return
 
-    # Take latest game per player
     if "game_date" in latest.columns:
         latest = latest.sort_values("game_date").groupby("player_id").last().reset_index()
     print(f"Loaded features for {len(latest)} players\n")
@@ -341,13 +398,11 @@ def main():
         name = mt["name"]
         model_name = mt["model_name"]
         series = mt["series_ticker"]
-        pattern = mt["pattern"]
         desc = mt["desc"]
         info_only = mt.get("info_only", False)
 
         print(f"Scanning {name} ({series})...", flush=True)
 
-        # Fetch markets
         try:
             mkts = client.list_markets(series_ticker=series, limit=500)
             if mkts is None or mkts.empty:
@@ -358,7 +413,7 @@ def main():
             continue
         print(f"  {len(mkts)} markets", flush=True)
 
-        # Load model (cached)
+        # Load model
         if model_name not in model_cache:
             m, s, feats, cal = _load_regressor(model_name)
             if m is None and not info_only:
@@ -369,81 +424,77 @@ def main():
 
         count = 0
         for _, mrow in mkts.iterrows():
+            ticker = mrow.get("ticker", "")
+            title = str(mrow.get("title", ""))
+
+            # Date filter
+            if not _is_current_market(ticker):
+                continue
+
+            # Parse title: "Player Name: NN+ stat"
+            if ":" not in title:
+                continue
+            title_parts = title.split(":", 1)
+            pname = title_parts[0].strip()
+            suffix = title_parts[1].strip()
+
+            # Extract line value
+            import re as _re2
+            line_m = _re2.search(r'(\d+)', suffix)
+            line_val = int(line_m.group(1)) if line_m else 0
+
+            # Bid/ask
+            yb_v = mrow.get("yes_bid_dollars", 0)
+            ya_v = mrow.get("yes_ask_dollars", 1)
+            yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
+            ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
+            if yb <= 0 and ya >= 1.0:
+                continue
+            yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
+
+            # Info-only
+            if info_only:
+                all_opps.append({
+                    "type": name, "ticker": ticker, "side": "yes",
+                    "price_cents": max(1, int(yes_mid * 100)),
+                    "model_prob": 0.5, "market_prob": round(yes_mid, 4),
+                    "edge": 0.0, "contracts": 1,
+                    "player": pname, "team": "", "line_val": 0,
+                    "stat_desc": desc, "label": f"{pname} {desc}",
+                })
+                count += 1
+                continue
+
+            if line_val <= 0:
+                continue
+
+            row_match = _match_player(pname, latest)
+            if row_match is None:
+                continue
+
+            avg_cols = [c for c in row_match.index
+                        if c.endswith("_avg_3") and isinstance(row_match[c], (int, float))]
+            if avg_cols and all(pd.isna(row_match[c]) for c in avg_cols):
+                continue
+
             try:
-                ticker = mrow["ticker"]
-                title = mrow.get("title", "")
-                yb_v = mrow.get("yes_bid_dollars", 0)
-                ya_v = mrow.get("yes_ask_dollars", 1)
-                yb = 0.0 if (isinstance(yb_v, float) and (yb_v != yb_v)) else float(yb_v or 0)
-                ya = 1.0 if (isinstance(ya_v, float) and (ya_v != ya_v)) else float(ya_v or 1)
-                if yb <= 0 and ya >= 1.0:
-                    continue
-                yes_mid = max(0.01, min(0.99, (yb + ya) / 2.0))
-
-                lm = re.match(pattern, title, re.IGNORECASE)
-                if not lm:
-                    continue
-                pname = lm.group(1).strip()
-
-                # For info_only markets (2D, 3D), just add as reference
-                if info_only:
-                    label = f"{pname} {desc}"
-                    all_bet = {
-                        "type": name, "ticker": ticker,
-                        "side": "yes",
-                        "price_cents": max(1, int(yes_mid * 100)),
-                        "model_prob": 0.5,
-                        "market_prob": round(yes_mid, 4),
-                        "edge": 0.0,
-                        "contracts": 1,
-                        "player": pname,
-                        "team": "",
-                        "line_val": 0,
-                        "stat_desc": desc,
-                        "label": label,
-                    }
-                    all_opps.append(all_bet)
-                    count += 1
-                    continue
-
-                line_val = int(lm.group(2))
-                if line_val <= 0:
-                    continue
-
-                row_match = _match_player(pname, latest)
-                if row_match is None:
-                    continue
-
-                # Skip players with insufficient data
-                avg_cols = [c for c in row_match.index
-                            if c.endswith("_avg_3") and isinstance(row_match[c], (int, float))]
-                if avg_cols and all(pd.isna(row_match[c]) for c in avg_cols):
-                    continue
-
                 p_yes, mu = _p_ge_line(
                     row_match, reg_model, reg_std, line_val, feature_names,
                     stat_name=name, beta_cal=beta_cal,
                 )
-                yes_edge = p_yes - yes_mid
-
-                label = f"{pname} {line_val}+ {desc}"
-                all_opps.append({
-                    "type": name, "ticker": ticker,
-                    "side": "yes",
-                    "price_cents": max(1, int(yes_mid * 100)),
-                    "model_prob": round(p_yes, 4),
-                    "market_prob": round(yes_mid, 4),
-                    "edge": round(yes_edge, 4),
-                    "contracts": 1,
-                    "player": pname,
-                    "team": "",
-                    "line_val": line_val,
-                    "stat_desc": desc,
-                    "label": label,
-                })
-                count += 1
             except Exception:
-                pass
+                continue
+
+            yes_edge = p_yes - yes_mid
+            all_opps.append({
+                "type": name, "ticker": ticker, "side": "yes",
+                "price_cents": max(1, int(yes_mid * 100)),
+                "model_prob": round(p_yes, 4), "market_prob": round(yes_mid, 4),
+                "edge": round(yes_edge, 4), "contracts": 1,
+                "player": pname, "team": "", "line_val": line_val,
+                "stat_desc": desc, "label": f"{pname} {line_val}+ {desc}",
+            })
+            count += 1
 
         label = f"  {name:4s} ({series:10s}): {count} markets matched"
         if info_only:

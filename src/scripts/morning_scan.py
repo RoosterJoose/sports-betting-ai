@@ -771,25 +771,22 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     except Exception as e:
         print(f"  UFC error: {e}")
 
-    # === 9. COLLEGE FOOTBALL (game winner markets) ===
+    # === 9. COLLEGE FOOTBALL (game winner markets — OFF-SEASON, info_only) ===
     print()
     print("  " + "-" * 66)
-    print("  9. COLLEGE FOOTBALL (game winner — trained XGB model)")
+    print("  9. COLLEGE FOOTBALL (off-season — models trained, betting disabled)")
     print("  " + "-" * 66)
-    cfb_bet_count = 0
     try:
         from src.scripts.kalshi_cfb import get_cfb_bets
         cfb_bets = get_cfb_bets(kc=kc, min_edge=min_edge)
         if cfb_bets:
-            for b in cfb_bets:
-                all_bets.append(b)
-            cfb_bet_count = len(cfb_bets)
-            print(f"  -> {cfb_bet_count} qualifying CFB bets")
+            print(f"  Found {len(cfb_bets)} opportunities (info_only — season hasn't started)")
             for b in sorted(cfb_bets, key=lambda x: -x["edge"])[:5]:
                 print(f"     {b['player']:25s} vs {b['team']:25s} "
                       f"model={b['model_prob']:.0%} mkt={b['market_prob']:.0%} edge={b['edge']:+.0%}")
+            # Don't add CFB bets to all_bets — season hasn't started
         else:
-            print("  No qualifying CFB bets found")
+            print("  No CFB markets found")
     except Exception as e:
         print(f"  CFB error: {e}")
 
@@ -828,7 +825,7 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     print("  11. MULTI-LEG PARLAYS (2/3/4-leg — all prop types)")
     print("  " + "-" * 66)
-    PARLAY_ALLOWED_TYPES = {"KS", "HR", "TB", "HRR", "F5", "WC", "UFC", "CFB",
+    PARLAY_ALLOWED_TYPES = {"KS", "HR", "TB", "HRR", "F5", "WC", "UFC",
                            "PASS_YDS", "PASS_TD", "RUSH_YDS", "REC", "REC_YDS", "TD",
                            "PTS", "REB", "AST", "BLK", "STL", "3PT", "FTM",
                            "PRA", "PA", "PR", "RA", "2D", "3D",
