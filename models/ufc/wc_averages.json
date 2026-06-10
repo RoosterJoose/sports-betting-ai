@@ -1,0 +1,86 @@
+{
+  "middleweight": {
+    "avg_fight_time": 611.3,
+    "height_cms": 184.3,
+    "weight_lbs": 183.8,
+    "age": 30.0
+  },
+  "light heavyweight": {
+    "avg_fight_time": 566.8,
+    "height_cms": 187.2,
+    "weight_lbs": 201.3,
+    "age": 30.4
+  },
+  "lightweight": {
+    "avg_fight_time": 641.0,
+    "height_cms": 177.5,
+    "weight_lbs": 154.2,
+    "age": 29.0
+  },
+  "welterweight": {
+    "avg_fight_time": 626.1,
+    "height_cms": 181.0,
+    "weight_lbs": 168.9,
+    "age": 29.4
+  },
+  "featherweight": {
+    "avg_fight_time": 659.4,
+    "height_cms": 174.2,
+    "weight_lbs": 144.0,
+    "age": 28.6
+  },
+  "women's flyweight": {
+    "avg_fight_time": 647.2,
+    "height_cms": 165.5,
+    "weight_lbs": 125.7,
+    "age": 28.2
+  },
+  "women's bantamweight": {
+    "avg_fight_time": 698.9,
+    "height_cms": 168.2,
+    "weight_lbs": 131.8,
+    "age": 29.6
+  },
+  "bantamweight": {
+    "avg_fight_time": 665.7,
+    "height_cms": 170.6,
+    "weight_lbs": 134.0,
+    "age": 28.3
+  },
+  "heavyweight": {
+    "avg_fight_time": 537.6,
+    "height_cms": 189.5,
+    "weight_lbs": 244.2,
+    "age": 31.6
+  },
+  "women's strawweight": {
+    "avg_fight_time": 684.0,
+    "height_cms": 162.0,
+    "weight_lbs": 116.2,
+    "age": 28.4
+  },
+  "women's featherweight": {
+    "avg_fight_time": 578.9,
+    "height_cms": 172.1,
+    "weight_lbs": 139.8,
+    "age": 29.6
+  },
+  "flyweight": {
+    "avg_fight_time": 671.6,
+    "height_cms": 166.6,
+    "weight_lbs": 126.0,
+    "age": 28.1
+  },
+  "catch weight": {
+    "avg_fight_time": 749.9,
+    "height_cms": 174.4,
+    "weight_lbs": 149.2,
+    "age": 29.4
+  },
+  "_default": {
+    "avg_fight_time": 611.3,
+    "height_cms": 184.3,
+    "weight_lbs": 183.8,
+    "age": 30.0
+  }
+}

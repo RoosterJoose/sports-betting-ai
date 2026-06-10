@@ -86,6 +86,7 @@ def main():
         brier = brier_score_loss(y_test, preds)
         auc = roc_auc_score(y_test, preds)
         cv_scores.append({"fold": fold, "accuracy": round(acc, 4), "brier": round(brier, 4), "auc": round(auc, 4)})
+        models.append(model)  # Keep CV-fold models in memory; saved below
         print(f"  Fold {fold}: acc={acc:.1%}, brier={brier:.4f}, auc={auc:.3f}")
 
     oof_train = oof_preds[y == 1].mean()
