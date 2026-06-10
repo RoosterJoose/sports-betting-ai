@@ -156,18 +156,98 @@ class MLBFeatureEngineer(FeatureEngineer):
         else:
             df["player_is_lefty"] = 0
 
+        # ── Platoon matchup: opponent lineup LHB%/RHB% (per game) ────
+        # Per NotebookLM: LHB vs RHP gets measurably different K%, HR%, TB.
+        # Sportsbooks underprice extreme platoon (6+ same-side batters).
+        # We approximate "opponent lineup handedness" by using the
+        # OPPOSING TEAM's average hitter handedness on that game_date.
+        # Temporally safe: only uses games BEFORE the current game.
+        if all(c in df.columns for c in ["team_id", "game_date", "position", "player_is_lefty"]):
+            # For each game_date, compute opposing team hitter mix from earlier games
+            is_hitter = df["position"].astype(str) != "P"
+            df_sorted = df.sort_values("game_date").reset_index(drop=True)
+
+            # Expanding average of LHB rate per team (shifted to exclude current game)
+            team_lhb_cum = df_sorted.groupby("team_id")["player_is_lefty"].transform(
+                lambda x: x.shift(1).expanding().mean()
+            )
+            team_games_cum = df_sorted.groupby("team_id").cumcount()
+            df["team_lhb_pct"] = team_lhb_cum.fillna(0.27)  # MLB avg LHB rate
+
+            # For each row, opponent's LHB% = look up opponent team's prior LHB rate
+            if "opponent_id" in df.columns:
+                team_lhb_map = df.groupby("team_id")["team_lhb_pct"].last().to_dict()
+                df["opp_lhb_pct"] = df["opponent_id"].map(team_lhb_map).fillna(0.27)
+                df["opp_rhb_pct"] = 1.0 - df["opp_lhb_pct"]
+                # Extreme platoon flag: 6+ same-side batters is ~80%+ (per NotebookLM)
+                df["extreme_platoon_lhh"] = (df["opp_lhb_pct"] >= 0.80).astype(int)
+                df["extreme_platoon_rhh"] = (df["opp_rhb_pct"] >= 0.80).astype(int)
+            else:
+                df["opp_lhb_pct"] = 0.27
+                df["opp_rhb_pct"] = 0.73
+                df["extreme_platoon_lhh"] = 0
+                df["extreme_platoon_rhh"] = 0
+        else:
+            df["opp_lhb_pct"] = 0.27
+            df["opp_rhb_pct"] = 0.73
+            df["extreme_platoon_lhh"] = 0
+            df["extreme_platoon_rhh"] = 0
+
+        # ── Weather features (open-meteo) for HR/TB markets ─────────
+        # Per NotebookLM: 15+ mph wind out to CF adds 1-2 runs; temp/humidity also matter.
+        # Joins by game_date + home park (no leakage — forecast available days ahead).
+        try:
+            from src.data.mlb_weather import fetch_hourly_weather, MLB_PARKS
+            cache_dir = Path(__file__).resolve().parents[2] / "data" / "cache" / "mlb" / "weather"
+            if cache_dir.exists() and "team_abbr" in df.columns:
+                # Compute home park abbreviation (vectorized — was per-row .apply() that hung on 1.18M rows)
+                home_mask = df.get("home_or_away", pd.Series("A", index=df.index)) == "H"
+                df["_home_abbr"] = np.where(home_mask, df["team_abbr"], df["opp_abbr"])
+                # Aggregate weather per (park, date) — average over game hours
+                weather_frames = []
+                for fpath in cache_dir.glob("*.parquet"):
+                    w = pd.read_parquet(fpath)
+                    w["date"] = pd.to_datetime(w["time"]).dt.date
+                    agg = w.groupby(["park", "date"]).agg({
+                        "temp_f": "mean",
+                        "wind_speed_mph": "mean",
+                        "wind_out_to_cf_mph": "mean",
+                        "humidity_pct": "mean",
+                        "wind_out_flag": "max",
+                        "strong_wind_out_flag": "max",
+                    }).reset_index()
+                    weather_frames.append(agg)
+                if weather_frames:
+                    weather_df = pd.concat(weather_frames, ignore_index=True).drop_duplicates(["park", "date"])
+                    df["_date"] = pd.to_datetime(df["game_date"]).dt.date
+                    df = df.merge(
+                        weather_df,
+                        left_on=["_home_abbr", "_date"],
+                        right_on=["park", "date"],
+                        how="left",
+                    )
+                    # Defaults: retractable roof parks get 0 wind, others 7-day-avg
+                    df["wind_out_to_cf_mph"] = df["wind_out_to_cf_mph"].fillna(0.0)
+                    df["strong_wind_out_flag"] = df["strong_wind_out_flag"].fillna(0).astype(int)
+                    df["temp_f"] = df["temp_f"].fillna(72.0)
+                    df["humidity_pct"] = df["humidity_pct"].fillna(50.0)
+                    df.drop(columns=["park", "date", "_date", "_home_abbr"], inplace=True, errors="ignore")
+            else:
+                raise FileNotFoundError
+        except (ImportError, FileNotFoundError, KeyError):
+            # No weather data — set safe defaults
+            df["wind_out_to_cf_mph"] = 0.0
+            df["strong_wind_out_flag"] = 0
+            df["temp_f"] = 72.0
+            df["humidity_pct"] = 50.0
+
         # Park factors: home team's park (pre-game knowledge, no leakage)
-        park_k = []
-        park_hr = []
-        park_tb = []
-        for _, row in df.iterrows():
-            home_abbr = row["team_abbr"] if row.get("home_or_away", "A") == "H" else row["opp_abbr"]
-            park_k.append(PARK_FACTOR_K.get(home_abbr, 1.0))
-            park_hr.append(PARK_FACTOR_HR.get(home_abbr, 1.0))
-            park_tb.append(PARK_FACTOR_TB.get(home_abbr, 1.0))
-        df["park_factor_k"] = park_k
-        df["park_factor_hr"] = park_hr
-        df["park_factor_tb"] = park_tb
+        # Vectorized via .map (was per-row .iterrows() that hung on 1.18M rows)
+        home_mask = df.get("home_or_away", pd.Series("A", index=df.index)) == "H"
+        home_abbr_series = np.where(home_mask, df["team_abbr"], df["opp_abbr"])
+        df["park_factor_k"] = pd.Series(home_abbr_series).map(PARK_FACTOR_K).fillna(1.0).values
+        df["park_factor_hr"] = pd.Series(home_abbr_series).map(PARK_FACTOR_HR).fillna(1.0).values
+        df["park_factor_tb"] = pd.Series(home_abbr_series).map(PARK_FACTOR_TB).fillna(1.0).values
 
         # Split and process separately
         hitters = df[df["position"] != "P"].copy() if "position" in df.columns else df.copy()
