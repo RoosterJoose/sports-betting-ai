@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Pre-commit hook: verify codegraph sees all key symbols as having callers.
+# Catches dynamic-import-in-try/except regressions (like the one fixed in
+# commit 3945c11 where 9 sport scanners were invisible to codegraph).
+#
+# Skip with: git commit --no-verify
+# Re-run manually: ./scripts/hooks/pre-commit
+set -e
+
+# Key symbols whose callers must NOT disappear. Add new ones here.
+# These are the modules/files that other code should always be able
+# to statically import. If any of these go from "has callers" to
+# "no callers", something was wrapped in a try/except or got moved.
+#
+# Use MODULE PATHS (src.x.y) — codegraph indexes by module, not by
+# class name. Class-name lookups (KalshiClient, RiskManager) return
+# "no callers" because class methods aren't tracked as callers.
+SYMBOLS=(
+  "nba_bet"
+  "kalshi_mlb_unified"
+  "src.execution.risk"
+  "src.data.kalshi"
+)
+
+# --- Skip gracefully if codegraph not installed -------------------------
+if ! command -v codegraph &> /dev/null; then
+  echo "  [codegraph] CLI not installed — skipping pre-commit check"
+  echo "  (install with: npm i -g @codegraph/cli)"
+  exit 0
+fi
+
+# --- Re-index (incremental, fast) --------------------------------------
+codegraph sync > /dev/null 2>&1 || true
+
+# --- Check each symbol --------------------------------------------------
+failed=0
+checked=0
+for sym in "${SYMBOLS[@]}"; do
+  out=$(codegraph callers "$sym" 2>&1 || true)
+  checked=$((checked + 1))
+  if echo "$out" | grep -q "No callers"; then
+    echo "  [codegraph] FAIL: '$sym' has NO callers (dynamic-import regression?)"
+    failed=1
+  elif echo "$out" | grep -q "Callers of"; then
+    # Extract the count from the header line: Callers of "X" (N):
+    count=$(echo "$out" | grep -oE 'Callers of "[^"]*" \([0-9]+\)' | grep -oE '[0-9]+' | head -1)
+    count=${count:-0}
+    echo "  [codegraph] OK:   '$sym' has $count caller(s)"
+  else
+    echo "  [codegraph] WARN: '$sym' query returned unexpected output:"
+    echo "$out" | sed 's/^/      /'
+  fi
+done
+
+if [ $failed -eq 1 ]; then
+  echo ""
+  echo "  Codegraph pre-commit FAILED ($checked symbols checked)"
+  echo "  Likely cause: a new dynamic import was added inside try/except"
+  echo "  Fix: hoist the import to module top, OR remove it from SYMBOLS"
+  echo "  Skip with: git commit --no-verify"
+  exit 1
+fi
+
+echo "  [codegraph] $checked symbols all have callers ✓"
+exit 0
