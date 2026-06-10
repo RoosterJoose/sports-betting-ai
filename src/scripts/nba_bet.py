@@ -28,11 +28,28 @@ from src.scripts.kalshi_nba_unified import _is_current_market, _match_player, lo
 # below loads model FG3M, not FG3A. If Kalshi ever launches a 3PT attempts
 # market (e.g., KXNBAG3A), the FG3A model is ready to be wired by adding a
 # new tuple to MARKETS — see _load_regressor in kalshi_nba_unified.py.
+#
+# NOTE on composite stats (PA, PR, RA, PRA):
+# All 4 composite models exist at models/nba/{PA,PR,RA,PRA}.json and backtest
+# 100% beat naive (June 9, 2026, see PROJECT.md):
+#   PA   sigma=6.82  Mean |Bias| 2.3%  Beats naive 38/38 (100%)
+#   PR   sigma=7.43  Mean |Bias| 2.4%  Beats naive 42/42 (100%)
+#   RA   sigma=3.50  Mean |Bias| 2.3%  Beats naive 19/19 (100%)
+#   PRA  sigma=8.12  Mean |Bias| 2.1%  Beats naive 49/49 (100%)
+# They are wired below as no-ops because Kalshi does NOT currently list series
+# tickers for combo stats (KXNBAPA/KXNBAPR/KXNBARA/KXNBAPRA all return 0
+# markets as of June 9, 2026). When Kalshi lists any of these series, the
+# scanner picks them up automatically — just re-run --scan.
 MARKETS = [
     ("PTS", "KXNBAPTS", "PTS", False), ("REB", "KXNBAREB", "REB", False),
     ("AST", "KXNBAAST", "AST", False), ("BLK", "KXNBABLK", "BLK", False),
     ("STL", "KXNBASTL", "STL", False), ("3PT", "KXNBA3PT", "FG3M", False),
     ("FTM", "KXNBAFTM", "FTM", False),
+    # Combo stats — trained + calibrated, awaiting Kalshi series tickers
+    ("PA",  "KXNBAPA",  "PA",  False),
+    ("PR",  "KXNBAPR",  "PR",  False),
+    ("RA",  "KXNBARA",  "RA",  False),
+    ("PRA", "KXNBAPRA", "PRA", False),
 ]
 
 
