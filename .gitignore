@@ -21,15 +21,35 @@ models/mlb/*.json
 !models/mlb/*_calibration_diag.json
 models/mlb/lgb_*.txt
 models/nfl/*.json
+!models/nfl/*_beta_cal.json
+!models/nfl/*_calibration_diag.json
 models/nba/*.json
+!models/nba/*_beta_cal.json
+!models/nba/*_calibration_diag.json
 models/wnba/*.json
+!models/wnba/*_beta_cal.json
+!models/wnba/*_calibration_diag.json
 models/nhl/*.json
+!models/nhl/*_beta_cal.json
+!models/nhl/*_calibration_diag.json
 models/golf/*.json
+!models/golf/*_beta_cal.json
+!models/golf/*_calibration_diag.json
 models/soccer/*.json
+!models/soccer/*_beta_cal.json
+!models/soccer/*_calibration_diag.json
 models/tennis/*.json
+!models/tennis/*_beta_cal.json
+!models/tennis/*_calibration_diag.json
 models/worldcup/*.json
+!models/worldcup/*_beta_cal.json
+!models/worldcup/*_calibration_diag.json
 models/ufc/*.json
+!models/ufc/*_beta_cal.json
+!models/ufc/*_calibration_diag.json
 models/nascar/*.json
+!models/nascar/*_beta_cal.json
+!models/nascar/*_calibration_diag.json
 models/nascar/*.meta.json
 
 # Python
