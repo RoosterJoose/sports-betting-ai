@@ -42,9 +42,12 @@ from src.scripts.kalshi_nba_unified import _is_current_market, _match_player, lo
 # scanner picks them up automatically — just re-run --scan.
 MARKETS = [
     ("PTS", "KXNBAPTS", "PTS", False), ("REB", "KXNBAREB", "REB", False),
-    ("AST", "KXNBAAST", "AST", False), ("BLK", "KXNBABLK", "BLK", False),
-    ("STL", "KXNBASTL", "STL", False), ("3PT", "KXNBA3PT", "FG3M", False),
-    ("FTM", "KXNBAFTM", "FTM", False),
+    ("AST", "KXNBAAST", "AST", False),
+    # BLK + STL gated to info_only: backtest only 57% / 71% beat naive
+    # (June 9, 2026 — see PROJECT.md). Low-count Poisson stats with high
+    # variance; keep models loaded for diagnostics but don't trade them.
+    ("BLK", "KXNBABLK", "BLK", True), ("STL", "KXNBASTL", "STL", True),
+    ("3PT", "KXNBA3PT", "FG3M", False), ("FTM", "KXNBAFTM", "FTM", False),
     # Combo stats — trained + calibrated, awaiting Kalshi series tickers
     ("PA",  "KXNBAPA",  "PA",  False),
     ("PR",  "KXNBAPR",  "PR",  False),
@@ -90,8 +93,13 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
     model_cache = {}
     results = []
     skipped_injured = 0
+    skipped_info_only = 0
 
     for name, series, model_name, info_only in MARKETS:
+        # Honor the info_only gate: scan but never bet these markets
+        if info_only:
+            skipped_info_only += 1
+            continue
         try:
             mkts = kc.list_markets(series_ticker=series, limit=500)
             if mkts is None or mkts.empty:
@@ -158,6 +166,8 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
 
     if skipped_injured:
         print(f"  Skipped {skipped_injured} injured/OUT player markets", flush=True)
+    if skipped_info_only:
+        print(f"  Skipped {skipped_info_only} info-only markets (no trade signal)", flush=True)
 
     return results
 
@@ -187,6 +197,9 @@ def main():
         print(f"Injury report: {len(out_players)} players OUT")
 
     for name, series, model_name, info_only in MARKETS:
+        if info_only:
+            print(f"\nSkipping {name} ({series}) — info_only (no trade signal)", flush=True)
+            continue
         print(f"\nScanning {name} ({series})...", flush=True)
         try:
             mkts = client.list_markets(series_ticker=series, limit=500)
