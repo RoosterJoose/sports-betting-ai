@@ -244,7 +244,7 @@ Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated
 ### 🔴 Critical
 | Issue | Impact | Fix |
 |-------|--------|-----|
-| **UFC odds-feature starvation** | Model predictions have unknown calibration — top features (odds) are synthetic 0s | Retrain without odds features, OR integrate live sportsbook odds |
+| ~~**UFC odds-feature starvation**~~ | ~~Model predictions have unknown calibration — top features (odds) are synthetic 0s~~ | ✅ **RESOLVED June 10** — removed r_odds/b_odds/odds_diff/odds_abs_diff from FEATURE_COLS + fixed missing `models.append(model)` bug in train_ufc.py that was preventing the save. Retrained model: 107 features (was 111), train_date 2026-06-10, no r_odds anywhere in feature list, smoke test p=0.693 for dominant fighter (18-2) vs generic. |
 | **NBA McBride injury gap** | Injured players may still get predictions if ESPN name ≠ Kalshi name | Debug name matching, add fuzzy fallback |
 
 ### 🟡 Important
@@ -495,7 +495,7 @@ Paper `morning_scan --paper` run after retraining:
 - [x] ~~**WC: validate offset on 2023+ test set (out-of-sample)**~~ ✅ **DONE June 10** — `validate_offset_oos.py`: n=2,693, neutral-venue Brier 0.2681 → 0.2663 (−0.0018, +0.7%), offset GENERALIZES
 - [x] ~~**WC: shrunk-offset variant to soften 2022-WC over-correction**~~ ✅ **DONE June 10** — `shrunk_offset_sweep.py`: w=0.20 (20% 2022, 80% pooled 2023+), Brier 0.2681 → 0.2636 (−0.0045, +1.7%), EC now also helps
 - [ ] **WC: add star-player post-hoc impact** (-5pp to missing-star team until retrained)
-- [ ] UFC: retrain without odds features OR integrate live odds
+- [x] ~~UFC: retrain without odds features OR integrate live odds~~ ✅ **DONE June 10** — removed 4 odds features, fixed IndexError bug, retrained (n_features 111→107, no r_odds), committed + pushed (`8b88613`)
 - [ ] WNBA: retrain player-level models
 - [ ] Verify CFB model quality when season approaches
 - [ ] **MLB: complete retraining with weather + platoon + log-transform features** (code in place, training process needs debug)
