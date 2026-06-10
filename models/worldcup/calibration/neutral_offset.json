@@ -1,8 +1,8 @@
 {
   "applied": true,
-  "delta_home": -0.11187694259084136,
-  "delta_draw": 0.052611178520724555,
-  "delta_away": 0.05926576407011694,
+  "delta_home": -0.0655065179578134,
+  "delta_draw": 0.019905175533453716,
+  "delta_away": 0.04560134242435948,
   "cap": 0.15,
   "n_val": 57,
   "val_acc_before": 0.7543859649122807,
@@ -24,6 +24,22 @@
     "draw": 0.052611178520724555,
     "away": 0.05926576407011694
   },
-  "computed_at": "2026-06-10T12:57:30.713311",
-  "notes": "Computed from 2022 WC val (neutral venue). Apply only at is_neutral=1 matches."
+  "computed_at": "2026-06-10T16:07:03.684370",
+  "notes": "Shrunk offset: blends 2022-WC global delta with pooled 2023+ delta to soften over-correction. Use shrinkage_weight to see the blend ratio. Apply only at is_neutral=1 matches.",
+  "shrinkage_weight": 0.2,
+  "shrinkage_components": {
+    "delta_2022_wc": [
+      -0.11187694259084136,
+      0.052611178520724555,
+      0.05926576407011694
+    ],
+    "delta_pooled_2023": [
+      -0.0539139117995564,
+      0.011728674786636,
+      0.04218523701292012
+    ],
+    "weight_2022": 0.2,
+    "weight_pooled": 0.8
+  },
+  "source": "shrunk_offset_sweep.py (best of sweep on 2023+ neutral subset)"
 }
