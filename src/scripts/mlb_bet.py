@@ -5,9 +5,16 @@ Predicts P(≥PrizePicks_line) via normal CDF on regressor output, then
 Wang-corrects for market calibration bias. No more classifier target mismatch.
 
 Usage:
-    python -m src.scripts.mlb_bet
+    python -m src.scripts.mlb_bet [--min-line N]
+
+CLI flags:
+    --min-line N   Minimum line value to surface (default 1.0). 0.5-line props
+                   (e.g. 0.5 H+R+RBI, 0.5 SO, 0.5 Walks) are filtered out as
+                   signal-free low-bar plays where most players clear the bar
+                   and the model gives P=85-99% trivially. Stats with naturally
+                   low bars (HR, SB, 3B) keep 0.5 as a valid threshold.
 """
-import sys, json, re, warnings
+import sys, json, re, warnings, argparse
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from pathlib import Path
@@ -28,6 +35,18 @@ import toml
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models" / "mlb"
 CALIB_DIR = MODEL_DIR / "calibration"
 BREAKEVEN = 0.542  # 5/6 Flex Play breakeven
+
+# Per-stat minimum line threshold. Default 1.0 filters out signal-free
+# 0.5-line plays (e.g. 0.5 H+R+RBI, 0.5 Walks) where the model gives P=85-99%
+# just because most players clear the low bar. Stats with naturally low
+# thresholds (HR, SB, 3B) keep 0.5 as a valid bar since "at least 1" is
+# the whole point of those props.
+MIN_LINE = 1.0
+MIN_LINE_OVERRIDES = {
+    "Home Runs": 0.5,
+    "Stolen Bases": 0.5,
+    "Triples": 0.5,
+}
 
 # PrizePicks stat_type → ALL-position regressor model name
 PP_REG_MAP = {
@@ -107,8 +126,21 @@ def p_ge_line(feat_row, booster, residual_std, line_val, beta_cal=None):
 
 
 def main():
+    global _min_line_default
+    parser = argparse.ArgumentParser(description="MLB PrizePicks edge scanner")
+    parser.add_argument("--min-line", type=float, default=MIN_LINE,
+                        help=f"Minimum line to surface (default {MIN_LINE}); "
+                             f"per-stat overrides for HR/SB/3B keep 0.5 valid.")
+    # --scan is a no-op kept for backward-compat with bin/refresh_mlb_everything.sh
+    # (the script is always a dry-run scan when invoked from cron)
+    parser.add_argument("--scan", action="store_true",
+                        help="(no-op) Alias for the default dry-run behavior.")
+    args = parser.parse_args()
+    _min_line_default = args.min_line
+
     print("=" * 100)
     print(f"MLB PrizePicks Picks (Regressor) — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Filter: line >= {_min_line_default} (per-stat: {MIN_LINE_OVERRIDES})")
     print("=" * 100)
 
     # ── 1. Load config ──
@@ -223,6 +255,13 @@ def main():
         # Edge vs PrizePicks breakeven
         edge = prob - BREAKEVEN
         if edge <= 0:
+            continue
+
+        # Filter signal-free low-bar plays (e.g. 0.5 SO, 0.5 H+R+RBI).
+        # Use per-stat minimum so HR/SB/3B (where 0.5 IS the meaningful bar)
+        # are still included. CLI override via --min-line.
+        min_line_for_stat = MIN_LINE_OVERRIDES.get(pp_stat, _min_line_default)
+        if pp_line < min_line_for_stat:
             continue
 
         results.append({
