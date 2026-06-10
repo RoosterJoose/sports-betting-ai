@@ -380,7 +380,7 @@ Paper `morning_scan --paper` run after retraining:
 
 **Gaps found in validation:**
 - ⚠️ `morning_scan.py` MLB loop only iterates 4 series (KS, HR, TB, HRR). The new live markets (IP/ER/H/BB/RBI from `kalshi_mlb_unified.py`) are not reached by the orchestrator. Needs the loop expanded.
-- ⚠️ F5 model (separate `mlb/f5_pa_outcome.py` code path) crashes with `LightGBM Fatal: 18 features vs 17 expected`. Pre-existing bug, not introduced by this audit.
+- ✅ F5 model feature mismatch (18 vs 17) **resolved June 9** — `src/mlb/f5_simulator.py` now uses `model.feature_name()` as source of truth (commit `0190463`).
 
 ### What Still Needs Validation
 - [ ] Fix Miles McBride injury filter gap
@@ -395,7 +395,7 @@ Paper `morning_scan --paper` run after retraining:
 - [x] ~~**MLB: complete retraining with weather + platoon + log-transform features**~~ ✅ **DONE June 9** — all 22 models retrained, mean |bias| 1.1%
 - [x] ~~**MLB: validate live scanner path with paper morning_scan**~~ ✅ **DONE June 9** — KS/TB/HRR all producing edges cleanly
 - [ ] **MLB: add IP/ER/H/BB/RBI series tickers to morning_scan.py MLB loop** (gating the 4 currently unwired live markets)
-- [ ] **MLB: fix F5 model feature mismatch (18 vs 17 features)** in `mlb/f5_pa_outcome.py`
+- [x] ~~**MLB: fix F5 model feature mismatch (18 vs 17 features)** in `mlb/f5_pa_outcome.py`~~ ✅ **DONE June 9** — `f5_simulator.py` uses `model.feature_name()` as source of truth (commit `0190463`)
 
 ---
 

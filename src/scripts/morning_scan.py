@@ -21,6 +21,33 @@ from src.execution.risk import RiskManager
 from src.utils.trade_tracker import TradeTracker
 from src.execution.kalshi_parlay import KalshiParlayFinder, display_parlays
 
+# Top-level imports for sport scanners (moved from inside try/except blocks so
+# static analyzers like codegraph can trace the full call graph of morning_scan).
+from src.scripts.kalshi_mlb_unified import (
+    load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line, _recency_check,
+)
+from src.scripts.scan_f5 import F5Scanner
+from src.scripts.scan_wc import scan as wc_scan
+from src.scripts.kalshi_nfl_unified import (
+    load_features as load_nfl_features,
+    MARKET_TYPES as NFL_MARKET_TYPES,
+    _load_regressor as _load_nfl_regressor,
+    _match_player as _match_nfl_player,
+    _p_ge_line as _p_ge_nfl_line,
+)
+from src.scripts.nba_bet import get_nba_bets
+from src.scripts.kalshi_wnba_unified import (
+    load_features as load_wnba_features,
+    MARKET_TYPES as WNBA_MARKET_TYPES,
+)
+from src.scripts.kalshi_nhl_unified import (
+    load_features as load_nhl_features,
+    MARKET_TYPES as NHL_MARKET_TYPES,
+)
+from src.scripts.kalshi_ufc import get_ufc_bets
+from src.scripts.kalshi_cfb import get_cfb_bets
+from src.execution.kalshi_trader import KalshiTrader
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # MLB team code -> full name mapping
@@ -161,7 +188,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  1. MLB PLAYER PROPS (KS, HR, TB, HRR, IP, ER, H, BB, RBI)")
     print("  " + "-" * 66)
     try:
-        from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line, _recency_check
         latest = load_features()
         if latest is not None and not latest.empty:
             print(f"  Loaded {len(latest)} players")
@@ -257,7 +283,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  2. MLB F5 MARKETS (Team Win - model quality: experimental)")
     print("  " + "-" * 66)
     try:
-        from src.scripts.scan_f5 import F5Scanner
         sc = F5Scanner(balance=balance)
         if sc.model is not None:
             date = datetime.now().strftime("%Y-%m-%d")
@@ -293,7 +318,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  3. WORLD CUP 2026")
     print("  " + "-" * 66)
     try:
-        from src.scripts.scan_wc import scan as wc_scan
         wc_bets = wc_scan()
         if wc_bets:
             for q in wc_bets:
@@ -327,13 +351,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     nfl_bet_count = 0
     try:
-        from src.scripts.kalshi_nfl_unified import (
-            load_features as load_nfl_features,
-            MARKET_TYPES as NFL_MARKET_TYPES,
-            _load_regressor as _load_nfl_regressor,
-            _match_player as _match_nfl_player,
-            _p_ge_line as _p_ge_nfl_line,
-        )
         nfl_latest = load_nfl_features()
         if nfl_latest is not None and not nfl_latest.empty:
             # Take latest week per player
@@ -446,7 +463,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     nba_bet_count = 0
     try:
-        from src.scripts.nba_bet import get_nba_bets
         nba_bets = get_nba_bets(kc=kc, min_edge=min_edge)
         if nba_bets:
             for b in nba_bets:
@@ -471,10 +487,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     wnba_bet_count = 0
     try:
-        from src.scripts.kalshi_wnba_unified import (
-            load_features as load_wnba_features,
-            MARKET_TYPES as WNBA_MARKET_TYPES,
-        )
         wnba_latest = load_wnba_features()
         if wnba_latest is not None and not wnba_latest.empty:
             if "game_date" in wnba_latest.columns:
@@ -549,10 +561,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     nhl_bet_count = 0
     try:
-        from src.scripts.kalshi_nhl_unified import (
-            load_features as load_nhl_features,
-            MARKET_TYPES as NHL_MARKET_TYPES,
-        )
         nhl_latest = load_nhl_features()
         if nhl_latest is not None and not nhl_latest.empty:
             if "game_date" in nhl_latest.columns:
@@ -627,7 +635,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     ufc_bet_count = 0
     try:
-        from src.scripts.kalshi_ufc import get_ufc_bets
         ufc_bets = get_ufc_bets(kc=kc, min_edge=min_edge)
         if ufc_bets:
             for b in ufc_bets:
@@ -647,7 +654,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  9. COLLEGE FOOTBALL (off-season — models trained, betting disabled)")
     print("  " + "-" * 66)
     try:
-        from src.scripts.kalshi_cfb import get_cfb_bets
         cfb_bets = get_cfb_bets(kc=kc, min_edge=min_edge)
         if cfb_bets:
             print(f"  Found {len(cfb_bets)} opportunities (info_only — season hasn't started)")
@@ -666,7 +672,6 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  10. SAFE COMPOUNDER (NO-side on longshots — INFO ONLY, never traded)")
     print("  " + "-" * 66)
     try:
-        from src.execution.kalshi_trader import KalshiTrader
         kt = KalshiTrader(risk=risk)
         opps = kt.safe_compounder_scan()
         if opps:
