@@ -99,7 +99,7 @@ def train_match_model():
         "elo_home", "elo_away", "elo_diff", "elo_diff_abs",
         "h_perf", "h_opp_elo", "h_gs", "h_gc", "h_goal_diff", "h_n",
         "a_perf", "a_opp_elo", "a_gs", "a_gc", "a_goal_diff", "a_n",
-        "is_friendly", "is_neutral",
+        "is_friendly", "is_neutral", "key_player_out",
     ]
     available = [c for c in feature_cols if c in feat_df.columns]
     missing = [c for c in feature_cols if c not in feat_df.columns]
@@ -107,6 +107,9 @@ def train_match_model():
         print(f"  Warning: missing features: {missing}")
 
     X = feat_df[available].copy().fillna(0)
+    # key_player_out has no historical lineup data, default to 0 for all training rows.
+    if "key_player_out" in available and "key_player_out" not in feat_df.columns:
+        X["key_player_out"] = 0
     y = y[: len(X)]
 
     # 7. Temporal split

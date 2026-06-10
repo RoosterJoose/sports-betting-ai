@@ -10,11 +10,63 @@ from src.data.kalshi import KalshiClient
 from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_teams,
                                   get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO,
                                   build_feature_vector)
+from src.data.fotmob import (LineupCache, FotMobScraper, compute_key_player_out,
+                              map_kalshi_to_fotmob_id)
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = PROJECT_ROOT / "models" / "worldcup"
 CALIB_DIR = MODEL_DIR / "calibration"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+# Lineup cache + scraper (lazy init — scraper takes ~2s to spin up Chromium)
+_lineup_cache: Optional[LineupCache] = None
+_fotmob_scraper: Optional[FotMobScraper] = None
+
+
+def _get_lineup_cache() -> LineupCache:
+    global _lineup_cache
+    if _lineup_cache is None:
+        _lineup_cache = LineupCache()
+    return _lineup_cache
+
+
+def _get_fotmob_scraper() -> FotMobScraper:
+    global _fotmob_scraper
+    if _fotmob_scraper is None:
+        _fotmob_scraper = FotMobScraper()
+    return _fotmob_scraper
+
+
+def _full_name_to_code(full_name: str) -> str:
+    """Reverse of TICKER_TEAM_MAP: full country name -> 3-letter code (e.g. 'Argentina' -> 'ARG')."""
+    for code, name in TICKER_TEAM_MAP.items():
+        if name == full_name:
+            return code
+    return full_name
+
+
+def _get_lineups_for_ticker(ticker: str) -> dict:
+    """Fetch lineups for a match ticker, using cache first then scraping FotMob."""
+    if not ticker:
+        return {}
+    cache = _get_lineup_cache()
+    if cache.is_fresh(ticker):
+        cached = cache.get(ticker)
+        if cached:
+            return cached
+    fotmob_id = map_kalshi_to_fotmob_id(ticker)
+    if fotmob_id is None:
+        return {}
+    try:
+        scraper = _get_fotmob_scraper()
+        lineups = scraper.fetch_lineups(fotmob_id)
+    except Exception:
+        return {}
+    if lineups.get("status") == "ok" and (lineups.get("home") or lineups.get("away")):
+        cache.set(ticker, lineups)
+        return lineups
+    return {}
 
 # Trained ML model cache
 _loaded_model = None
@@ -190,24 +242,55 @@ def _build_form_features(elo_df, elo_ratings):
     return form
 
 
-def predict_match(home_team, away_team, elo_ratings, form_features=None):
+def predict_match(home_team, away_team, elo_ratings, form_features=None,
+                  ticker: str = None, lineups: dict = None):
     """Predict match outcome using trained ML model, falling back to Elo formula.
     Returns array of [p_home, p_draw, p_away].
+
+    Parameters
+    ----------
+    home_team, away_team : str
+        Full country name (e.g. "Argentina", "USA").
+    elo_ratings : dict
+        Mapping of country name to Elo rating.
+    form_features : dict, optional
+        Pre-computed form features per team.
+    ticker : str, optional
+        Kalshi WC ticker (e.g. "KXWCGAME-26JUN11MEXCUB-MEX"). Used to compute
+        key_player_out via the LineupCache (or a FotMob scrape on miss).
+    lineups : dict, optional
+        Pre-fetched lineups {"home": [...], "away": [...]}. Overrides ticker.
     """
     elo_h = elo_ratings.get(home_team, CONF_ELO.get(CONF_MAP.get(home_team, ""), 1500))
     elo_a = elo_ratings.get(away_team, CONF_ELO.get(CONF_MAP.get(away_team, ""), 1500))
-    
+
+    # Compute key_player_out (per NotebookLM Q2d). Lineups published ~60 min
+    # before kickoff; before that the feature stays 0 (treated as OOD by model).
+    key_player_out = 0
+    if lineups is None and ticker:
+        lineups = _get_lineups_for_ticker(ticker)
+    if lineups:
+        try:
+            key_player_out = compute_key_player_out(
+                _full_name_to_code(home_team),
+                _full_name_to_code(away_team),
+                lineups,
+            )
+        except Exception:
+            key_player_out = 0
+
     # Try trained ML model first
     model, meta = _load_match_model()
     if model is not None and meta is not None and form_features is not None:
         try:
             hf = form_features.get(home_team, {"perf": 0, "opp_elo": elo_h, "gs": 0, "gc": 0, "n": 0})
             af = form_features.get(away_team, {"perf": 0, "opp_elo": elo_a, "gs": 0, "gc": 0, "n": 0})
-            
+
             # Build feature vector via shared utility (matches training data order)
             # Pass "WC" so is_neutral=1 — World Cup matches are at neutral venues
             features = meta.get("features", [])
-            x = build_feature_vector(elo_h, elo_a, hf, af, "WC", features)
+            x = build_feature_vector(elo_h, elo_a, hf, af, "WC", features,
+                                      key_player_out=key_player_out)
             probs = model.predict(x)[0]
 
             # === Apply neutral-venue empirical offset (per NotebookLM rec) ===
@@ -390,7 +473,10 @@ def scan(args=None):
         if home not in known_elo_teams or away not in known_elo_teams:
             continue
 
-        model_probs = predict_match(home, away, elo_ratings, form_features)
+        # Use the home-team ticker as the lineup cache key (one entry per match)
+        match_ticker = m.get("home_ticker", "")
+        model_probs = predict_match(home, away, elo_ratings, form_features,
+                                    ticker=match_ticker)
         mkt_probs = np.array([m["home_mid"], m["tie_mid"], m["away_mid"]])
         fair_probs = shin_devig(mkt_probs)
 
@@ -472,7 +558,9 @@ def scan(args=None):
         home = m["home_team"]
         away = m["away_team"]
         mkt_probs = np.array([m.get("home_mid", 0), m.get("tie_mid", 0), m.get("away_mid", 0)])
-        model_probs = predict_match(home, away, elo_ratings, form_features)
+        match_ticker_ref = m.get("home_ticker", "")
+        model_probs = predict_match(home, away, elo_ratings, form_features,
+                                    ticker=match_ticker_ref)
 
         date_str = m.get("match_date", "TBD")
         print(f"\n  {home:20s} vs {away:20s}  [{date_str}]")

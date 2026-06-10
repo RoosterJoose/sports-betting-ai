@@ -1,0 +1,107 @@
+{
+  "_comment": "Top WC 2026 star players by team. Used by FotMob lineup scraper to compute the key_player_out feature. Names should match how FotMob displays them in lineups (typically full name or common short form).",
+  "_version": "1.0",
+  "_updated": "2026-06-10",
+
+  "ARG": [
+    "Lionel Messi", "Julián Álvarez", "Emiliano Martínez", "Rodrigo De Paul",
+    "Alexis Mac Allister", "Enzo Fernández", "Cristian Romero"
+  ],
+  "BRA": [
+    "Vinícius Júnior", "Rodrygo", "Bruno Guimarães", "Marquinhos",
+    "Alisson", "Casemiro", "Raphinha"
+  ],
+  "FRA": [
+    "Kylian Mbappé", "Antoine Griezmann", "Aurélien Tchouaméni",
+    "William Saliba", "Mike Maignan", "Eduardo Camavinga"
+  ],
+  "ESP": [
+    "Lamine Yamal", "Pedri", "Gavi", "Rodri", "Unai Simón", "Dani Olmo"
+  ],
+  "ENG": [
+    "Jude Bellingham", "Harry Kane", "Bukayo Saka", "Phil Foden",
+    "Declan Rice", "Jordan Pickford"
+  ],
+  "POR": [
+    "Cristiano Ronaldo", "Bernardo Silva", "Bruno Fernandes",
+    "Vitinha", "Rúben Dias", "Rafael Leão"
+  ],
+  "GER": [
+    "Jamal Musiala", "Florian Wirtz", "Kai Havertz", "Antonio Rüdiger",
+    "Manuel Neuer", "Joshua Kimmich"
+  ],
+  "NED": [
+    "Virgil van Dijk", "Memphis Depay", "Xavi Simons",
+    "Frenkie de Jong", "Cody Gakpo", "Bart Verbruggen"
+  ],
+  "BEL": [
+    "Kevin De Bruyne", "Romelu Lukaku", "Youri Tielemans", "Thibaut Courtois"
+  ],
+  "ITA": [
+    "Nicolò Barella", "Sandro Tonali", "Moise Kean", "Gianluigi Donnarumma"
+  ],
+  "CRO": [
+    "Luka Modrić", "Mateo Kovačić", "Joško Gvardiol", "Dominik Livaković"
+  ],
+  "USA": [
+    "Christian Pulisic", "Weston McKennie", "Tyler Adams", "Gio Reyna",
+    "Matt Turner", "Folarin Balogun"
+  ],
+  "MEX": [
+    "Hirving Lozano", "Santiago Giménez", "Edson Álvarez", "Guillermo Ochoa"
+  ],
+  "URU": [
+    "Federico Valverde", "Darwin Núñez", "Ronald Araújo", "Sergio Rochet"
+  ],
+  "COL": [
+    "Luis Díaz", "James Rodríguez", "Davinson Sánchez"
+  ],
+  "ECU": [
+    "Moisés Caicedo", "Piero Hincapié", "Enner Valencia"
+  ],
+  "SEN": [
+    "Sadio Mané", "Kalidou Koulibaly", "Édouard Mendy"
+  ],
+  "MAR": [
+    "Achraf Hakimi", "Youssef En-Nesyri", "Bono"
+  ],
+  "NGA": [
+    "Victor Osimhen", "Wilfred Ndidi"
+  ],
+  "EGY": [
+    "Mohamed Salah", "Omar Marmoush"
+  ],
+  "JPN": [
+    "Takefusa Kubo", "Ao Tanaka"
+  ],
+  "KOR": [
+    "Son Heung-min", "Lee Kang-in"
+  ],
+  "AUS": [
+    "Mathew Leckie", "Aaron Mooy"
+  ],
+  "CAN": [
+    "Alphonso Davies", "Jonathan David"
+  ],
+  "SCO": [
+    "Scott McTominay", "Andy Robertson"
+  ],
+  "DEN": [
+    "Christian Eriksen", "Rasmus Højlund", "Joachim Andersen"
+  ],
+  "AUT": [
+    "David Alaba", "Marko Arnautović"
+  ],
+  "TUR": [
+    "Arda Güler", "Hakan Çalhanoğlu"
+  ],
+  "POL": [
+    "Robert Lewandowski", "Piotr Zieliński"
+  ],
+  "NOR": [
+    "Erling Haaland", "Martin Ødegaard"
+  ],
+  "SUI": [
+    "Granit Xhaka", "Manuel Akanji", "Yann Sommer"
+  ]
+}

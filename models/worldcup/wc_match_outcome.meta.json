@@ -1,10 +1,10 @@
 {
-  "train_date": "2026-06-10T12:38:19.450407",
+  "train_date": "2026-06-10T12:57:06.841804",
   "temporal_split": "pre-2022 train / 2022 WC val / 2023+ test",
   "n_train": 8232,
   "n_val": 57,
   "n_test": 2705,
-  "n_features": 18,
+  "n_features": 19,
   "features": [
     "elo_home",
     "elo_away",
@@ -23,7 +23,8 @@
     "a_goal_diff",
     "a_n",
     "is_friendly",
-    "is_neutral"
+    "is_neutral",
+    "key_player_out"
   ],
   "val_accuracy": 0.7894736842105263,
   "val_brier": 0.2972969246238699,

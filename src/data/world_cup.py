@@ -312,6 +312,7 @@ def build_feature_dataset(elo_df):
             "h_perf": h_perf, "h_opp_elo": h_opp_elo, "h_gs": hgs, "h_gc": hgc, "h_n": hn,
             "a_perf": a_perf, "a_opp_elo": a_opp_elo, "a_gs": ags, "a_gc": agc, "a_n": an,
             "is_neutral": is_neutral,
+            "key_player_out": 0,  # No historical lineup data; always 0 in training
             "home_won": hw, "draw": d_, "away_won": aw,
         })
 
@@ -356,7 +357,8 @@ def get_known_elo_teams(elo_df):
     return teams
 
 
-def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
+def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features,
+                          key_player_out: int = 0):
     """Build a model-ready feature vector from Elo ratings and form dictionaries.
 
     Shared by backtest_wc.py and scan_wc.py.  The *features* list must match
@@ -378,6 +380,11 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
         Tournament code for the match (e.g. ``"WC"``, ``"FR"`` for friendly).
     features : list[str]
         Ordered list of feature names the model expects.
+    key_player_out : int
+        1 if a star player (per data/wc_star_players.json) is missing from
+        either team's confirmed XI, else 0. Default 0 for training data
+        (no historical lineup info). Set at prediction time by the scanner
+        after fetching the confirmed XI from FotMob. See src/data/fotmob.py.
 
     Returns
     -------
@@ -412,6 +419,8 @@ def build_feature_vector(elo_home, elo_away, hf, af, tournament_code, features):
             vec[c] = is_friendly
         elif c == "is_neutral":
             vec[c] = is_neutral
+        elif c == "key_player_out":
+            vec[c] = int(key_player_out)
         else:
             # Backward compat: old models may have h_wr, h_dr, etc.
             if c in ("h_wr", "h_dr"):
