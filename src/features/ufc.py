@@ -29,7 +29,6 @@ STAT_INFO = [
     ("reach_cms", 183.0),
     ("weight_lbs", 170.0),
     ("age", 30),
-    ("odds", 0),
     ("win_by_ko_tko", 3),
     ("win_by_submission", 2),
     ("win_by_decision_unanimous", 2),
@@ -95,9 +94,6 @@ FEATURE_COLS = [
     "r_sub_rate", "b_sub_rate",
     "r_dec_rate", "b_dec_rate",
     "ko_rate_diff", "sub_rate_diff", "dec_rate_diff",
-    # NEW: Historical odds
-    "r_odds", "b_odds",
-    "odds_diff", "odds_abs_diff",
     # NEW: Rolling form features (computed in build_features)
     "fighter_avg_sig_str_landed_avg_3",
     "fighter_avg_td_landed_avg_3",
@@ -219,15 +215,11 @@ def build_ufc_features(df: pd.DataFrame) -> pd.DataFrame:
     for rate in ["ko_rate", "sub_rate", "dec_rate"]:
         result[f"{rate}_diff"] = result[f"r_{rate}"] - result[f"b_{rate}"]
 
-    # ── 8. NEW: Historical odds features ─────────────────────────────
-    for prefix in ["r_", "b_"]:
-        odds_col = f"{prefix}odds"
-        if odds_col in result.columns:
-            result[odds_col] = pd.to_numeric(result[odds_col], errors="coerce").fillna(0)
-        else:
-            result[odds_col] = 0
-    result["odds_diff"] = result["r_odds"] - result["b_odds"]
-    result["odds_abs_diff"] = result["odds_diff"].abs()
+    # ── 8. REMOVED: Historical odds features (June 10 fix — fatal flaw) ──
+    # Model was trained WITH odds but predicted WITH synthetic odds=0.
+    # Removed r_odds, b_odds, odds_diff, odds_abs_diff from FEATURE_COLS
+    # so the model is now self-contained at inference time. Predictions
+    # no longer depend on betting-market info we don't have at trade time.
 
     # ── 9. Combined features ─────────────────────────────────────────
     result["combined_sig_str"] = result["r_avg_sig_str_landed"] + result["b_avg_sig_str_landed"]
