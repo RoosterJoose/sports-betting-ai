@@ -113,8 +113,17 @@ else
     exit 0
 fi
 
-# ── Step 4: (No BetaCal for MLB — calibrations not yet implemented) ─────────
-log "  Step 4: Skipped (MLB BetaCal not yet implemented — no calibration files)"
+# ── Step 4: Re-fit MLB BetaCal calibrations ───────────────────────────────
+log "  Step 4: Re-fitting MLB BetaCal calibrations..."
+if "${PYTHON}" -m scripts.fit_mlb_beta_cal >> "${LOG_FILE}" 2>&1; then
+    log "  Step 4: SUCCESS"
+else
+    log "  Step 4: FAILED — see above for trace"
+    log "==================================================================="
+    log "  REFRESH FAILED at Step 4 (calibration)"
+    log "==================================================================="
+    exit 0
+fi
 
 # ── Step 5: Staleness check ─────────────────────────────────────────────────
 log "  Step 5: Running staleness check..."
