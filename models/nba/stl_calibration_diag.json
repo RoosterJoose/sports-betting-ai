@@ -1,0 +1,11 @@
+{
+  "stat": "STL",
+  "n_test": 5706,
+  "n_calibration_samples": 5706,
+  "residual_std": 0.926,
+  "before_bias": 0.05,
+  "after_bias": 0.0,
+  "a": 1.531646962027114,
+  "b": 0.6010132636271655,
+  "c": 0.45752255494891303
+}

@@ -1,0 +1,11 @@
+{
+  "stat": "REB",
+  "n_test": 5706,
+  "n_calibration_samples": 48743,
+  "residual_std": 2.4781,
+  "before_bias": 0.022,
+  "after_bias": -0.0,
+  "a": 1.3411422797712973,
+  "b": 0.6420439451883405,
+  "c": 0.4647061023728818
+}

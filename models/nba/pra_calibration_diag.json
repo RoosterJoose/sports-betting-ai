@@ -1,0 +1,11 @@
+{
+  "stat": "PRA",
+  "n_test": 5706,
+  "n_calibration_samples": 187016,
+  "residual_std": 7.773,
+  "before_bias": 0.006,
+  "after_bias": -0.0,
+  "a": 1.1662922873655093,
+  "b": 0.65845327128471,
+  "c": 0.39085059433636815
+}

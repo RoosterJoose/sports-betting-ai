@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates, **NBA formal backtest verified 13/17 live**, **MLB full audit complete — mean |bias| 1.1% across 11 models, all retrained with weather+platoon+log-transform**)
+Last updated: **2026-06-10** (Session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
 
 ---
 
@@ -244,6 +244,53 @@ Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated
 |-------|--------|-----|
 | WC draw prediction still weak | 1/11 draws predicted correctly on 2022 WC | More neutral-venue data or separate draw model |
 | CFB models exist but untested | Quality unknown until season starts | Backtest when 2026 season begins |
+
+---
+
+## Session Log — June 10, 2026
+
+### Changes This Session (10 commits + 1 dispatcher)
+
+| Commit | Description |
+|--------|-------------|
+| `c2590ad` | MLB: `fit_mlb_beta_cal.py` supports new `lgb_*.txt` model format (find_model_paths) |
+| `b8d6ef1` | MLB: BetaCal calibrations + Step 4 wired in `bin/refresh_mlb_everything.sh` (11 cal files) |
+| `bcb85c8` | Cron: Step 4 (cal refit) wired into MLB dispatcher in `bin/refresh_everything.sh` |
+| `f5b9cf1` | **fix(mlb)**: `mlb_bet.py` now loads `lgb_*.txt` LightGBM models + root-dir BetaCal. Was looking for `reg_*.json` (XGBoost). Scanner went 0 → 2,902 valid predictions. |
+| `9c8edc2` | **feat(mlb)**: 5 new ALL_ stat types (Singles, Doubles, Triples, H_FPTS, P_FPTS). Trained 5 new LightGBM regressors + wired into PP_REG_MAP. load_features() merges hbp/cs/w/l/sv columns. Scanner 2,902 → 3,596 valid predictions. |
+| `4e99041` | **chore(gitignore)**: whitelist `models/mlb/*_beta_cal.json` and `*_calibration_diag.json` |
+| `8c66f4b` | **chore(gitignore)**: extend whitelist to all sports (nba, nfl, nhl, wnba, golf, soccer, tennis, worldcup, ufc, nascar) |
+| `d98a72d` | **fix(mlb)**: accept `--scan` as a no-op arg for backward-compat with `bin/refresh_mlb_everything.sh` |
+| (uncommitted) | **feat(mlb)**: `MIN_LINE=1.0` filter in `mlb_bet.py` — drops signal-free 0.5-line plays. Per-stat overrides for HR/SB/3B. CLI override via `--min-line N`. Scanner 3,596 → 179 high-bar actionable (95% noise reduction). |
+
+**New files**: `bin/refresh_everything.sh` (4-sport dispatcher), `bin/refresh_nba_everything.sh`, `bin/refresh_mlb_everything.sh`, `scripts/install-nhl-cron.sh`, `scripts/install-nfl-cron.sh`, `scripts/fit_mlb_beta_cal.py`. Pre-commit hook [3/3] SIZE check.
+
+### What We Learned
+
+1. **Scanner was dead for 5,717 PP lines**: trainer writes `lgb_*.txt` LightGBM files, scanner was looking for `reg_*.json` XGBoost files. One-line path fix and 100% of lines now find regressors. Lesson: when switching ML frameworks, the scanner and trainer must migrate in lockstep.
+2. **Triples are unmeasurable at this scale**: R²=0.0, MAE=0.026 (model basically always predicts 0). Rarity limit — Tribles is a noise stat. Model loads, but no signal.
+3. **0.5 lines are signal-free**: 85-99% of hitters clear 0.5 H+R+RBI, 0.5 SO, 0.5 Walks. The model can give P=88% trivially. `MIN_LINE=1.0` filter drops 95% of "actionable" — the remaining 179 are higher-bar plays that carry real signal.
+4. **`.gitignore` patterns were over-eager**: `models/*/*.json` was catching both the cal files (which SHOULD be committed) and the importance CSVs (which should be ignored). Now whitelisted `*_beta_cal.json` and `*_calibration_diag.json` for all sports.
+5. **The new 50MB pre-commit check would have caught the statcast incident**: `git filter-repo` was the cleanup; the hook prevents recurrence.
+
+### Today's Recommended Plays (June 10, 2026)
+
+**Top 3 NBA** (Game 4 of NBA Finals tonight, on Kalshi):
+1. Mitchell Robinson REB 6+ @ 36c — model 79%, edge +43% (5★)
+2. Mitchell Robinson REB 5+ @ 49c — model 87%, edge +38% (4.5★)
+3. Miles McBride 3PT 2+ @ 26c — model 56%, edge +29% (4★)
+
+**Top 3 MLB** (PrizePicks, all 1.5+ lines):
+1. Davis Martin SO 3.5 OVER — model 99.8%, edge +45.6% (5★)
+2. Chris Sale H allowed 3.5 OVER — model 99.1%, edge +44.9% (5★)
+3. Ian Happ H+R+RBI 1.5 OVER — model 80.5%, edge +26.4% (4★)
+
+**Best 2/3/4-leg parlays** (see `reports/BestBets.md` for full math):
+- 2-leg: Davis Martin SO + Chris Sale H allowed (correlated, ~95-98% joint P)
+- 3-leg: Robinson REB 5+ + Martin SO + Happ H+R+RBI (69.9% joint, 5× payout)
+- 4-leg: + McBride 3PT 2+ (39.1% joint, 10× payout)
+
+**Status:** No orders placed — candidates for user approval. Per Hard Rule #3.
 
 ---
 
