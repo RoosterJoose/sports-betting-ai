@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates, **NBA formal backtest verified 13/17 live**, **MLB full audit with NotebookLM integration**)
+Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates, **NBA formal backtest verified 13/17 live**, **MLB full audit complete — mean |bias| 1.1% across 11 models, all retrained with weather+platoon+log-transform**)
 
 ---
 
@@ -349,6 +349,39 @@ For the other 8 "live" markets, I would bet **with reduced size and only in favo
 
 **R and SB: would not bet.** Both fail naive baseline. Dropped from scanner.
 
+#### Final "Would I Bet?" Verdict (post-retrain, post-Isotonic cal — June 9)
+
+| Market | R² | \|Bias\| (old → new) | Beats Naive | Bet? |
+|--------|-----|---------------------|-------------|------|
+| **IP** | 0.80 | 1.3% → **0.8%** | 5/5 | 🟢 **Full size** outside 40-60c |
+| **SO** | 0.33 | 3.6% → **2.1%** | 5/5 | 🟢 **Full size** outside 40-60c |
+| **BB** | 0.41 | 4.9% → **0.5%** | 4/4 | 🟢 **Full size** outside 40-60c |
+| **H** | 0.13 | 4.7% → **1.0%** | 5/5 | 🟢 **50% size** outside 40-60c |
+| **TB** | 0.27 | 6.4% → **2.1%** | 5/5 | 🟢 **50% size** outside 40-60c |
+| **H_R_RBI** | 0.12 | 5.2% → **2.7%** | 5/5 | 🟢 **50% size** outside 40-60c |
+| **ER** | 0.14 | 6.5% → **1.1%** | 4/4 | 🟢 **50% size** outside 40-60c |
+| **RBI** | 0.02 | 5.5% → **0.6%** | 4/4 | 🟢 **50% size** outside 40-60c |
+| **HR** | 0.15 | 1.6% → **1.0%** | 2/4 | 🟡 **25% size, edge > 10%**, outside 40-60c |
+| **R** | 0.017 | 4.7% → **0.4%** | 2/4 | 🔴 **NO** — dropped from scanner |
+| **SB** | 0.02 | 0.5% → **0.1%** | 2/4 | 🔴 **NO** — dropped from scanner |
+
+**Mean |bias| across 11 stats: 4.0% → 1.1% (73% reduction).**
+
+**The bottom line: every single stat improved.** R² for the stats stayed similar (regressor behavior didn't change much), but the calibration is dramatically tighter. IP and SO are the only two I'd bet full size with full conviction.
+
+#### Morning Scan Validation (June 9)
+
+Paper `morning_scan --paper` run after retraining:
+- ✅ New models load cleanly
+- ✅ Isotonic calibrators apply without errors
+- ✅ Fee-zone filter (40-60c) working
+- ✅ Info_only gate drops R/SB correctly
+- ✅ Main path produced: KS=4, HR=0 (illiquid), TB=27, HRR=62 qualifying plays
+
+**Gaps found in validation:**
+- ⚠️ `morning_scan.py` MLB loop only iterates 4 series (KS, HR, TB, HRR). The new live markets (IP/ER/H/BB/RBI from `kalshi_mlb_unified.py`) are not reached by the orchestrator. Needs the loop expanded.
+- ⚠️ F5 model (separate `mlb/f5_pa_outcome.py` code path) crashes with `LightGBM Fatal: 18 features vs 17 expected`. Pre-existing bug, not introduced by this audit.
+
 ### What Still Needs Validation
 - [ ] Fix Miles McBride injury filter gap
 - [x] ~~Run formal NBA backtest (all 17 stats vs naive)~~ ✅ **13/17 PASS, 4/17 partial (info_only)** — June 9
@@ -359,6 +392,10 @@ For the other 8 "live" markets, I would bet **with reduced size and only in favo
 - [ ] **MLB: complete retraining with weather + platoon + log-transform features** (code in place, training process needs debug)
 - [ ] **MLB: integrate live umpire zone data (UmpireScorecards)** — currently stubbed
 - [ ] **MLB: integrate opener detection for IP model** — currently stubbed
+- [x] ~~**MLB: complete retraining with weather + platoon + log-transform features**~~ ✅ **DONE June 9** — all 22 models retrained, mean |bias| 1.1%
+- [x] ~~**MLB: validate live scanner path with paper morning_scan**~~ ✅ **DONE June 9** — KS/TB/HRR all producing edges cleanly
+- [ ] **MLB: add IP/ER/H/BB/RBI series tickers to morning_scan.py MLB loop** (gating the 4 currently unwired live markets)
+- [ ] **MLB: fix F5 model feature mismatch (18 vs 17 features)** in `mlb/f5_pa_outcome.py`
 
 ---
 
