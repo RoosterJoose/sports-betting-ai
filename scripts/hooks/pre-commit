@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook: TWO checks
+# Pre-commit hook: THREE checks
 #  1. STALENESS: abort if any sport's player-game-logs parquet is older
 #     than 7 days while that sport is in season. Catches the bug where
 #     the model was used to suggest bets for a game whose data was never
@@ -7,6 +7,10 @@
 #  2. CODEGRAPH: verify codegraph sees all key symbols as having callers.
 #     Catches dynamic-import-in-try/except regressions (the one fixed in
 #     commit 3945c11 where 9 sport scanners were invisible to codegraph).
+#  3. FILE SIZE: abort if any staged file is >50MB. Catches the bug
+#     where statcast parquet files (113MB, 110MB) blocked pushes because
+#     they exceed GitHub's 100MB limit. Filter-repo cleaned history;
+#     this guard prevents it from happening again.
 #
 # Skip with: git commit --no-verify
 # Re-run manually: ./scripts/hooks/pre-commit
@@ -18,7 +22,7 @@ set -e
 # Prefer the repo-local venv python (has pandas/numpy); fall back to
 # system python3 (will skip if deps missing).
 echo
-echo "  [1/2] staleness check (sport cache freshness)..."
+echo "  [1/3] staleness check (sport cache freshness)..."
 if [ -x ".venv/bin/python" ]; then
   PY=".venv/bin/python"
 elif command -v python3 &> /dev/null; then
@@ -49,7 +53,7 @@ SYMBOLS=(
 )
 
 echo
-echo "  [2/2] codegraph callers check..."
+echo "  [2/3] codegraph callers check..."
 if ! command -v codegraph &> /dev/null; then
   echo "  [codegraph] CLI not installed — skipping pre-commit check"
   echo "  (install with: npm i -g @codegraph/cli)"
@@ -89,4 +93,43 @@ if [ $failed -eq 1 ]; then
 fi
 
 echo "  [codegraph] $checked symbols all have callers ✓"
+
+# === CHECK 3: FILE SIZE =================================================
+# Abort if any staged file is >50MB. Catches the bug where statcast
+# parquet files (113MB, 110MB) blocked pushes because they exceed
+# GitHub's 100MB limit. Filter-repo cleaned history; this guard
+# prevents it from happening again. Use --no-verify to skip.
+echo
+echo "  [3/3] staged file size check (limit 50MB)..."
+
+MAX_BYTES=$((50 * 1024 * 1024))
+oversized=()
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  # Skip files that no longer exist on disk (e.g. deleted in this commit)
+  [ ! -f "$f" ] && continue
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || stat -f%z "$f" 2>/dev/null || echo 0)
+  if [ "${sz:-0}" -gt "$MAX_BYTES" ]; then
+    mb=$(awk -v b="$sz" 'BEGIN { printf "%.1f", b / 1024 / 1024 }')
+    oversized+=("$mb MB  $f")
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ ${#oversized[@]} -gt 0 ]; then
+  echo "  SIZE CHECK FAILED — refusing to commit"
+  echo
+  echo "  The following staged files exceed the 50MB limit:"
+  for entry in "${oversized[@]}"; do
+    echo "    $entry"
+  done
+  echo
+  echo "  GitHub rejects pushes with files >100MB. Add the file(s) to"
+  echo "  .gitignore, or remove them from staging:"
+  echo "    git reset HEAD <file>"
+  echo "    echo '<pattern>' >> .gitignore"
+  echo "  Skip with: git commit --no-verify"
+  exit 1
+fi
+
+echo "  [size] all staged files are <50MB ✓"
 exit 0
