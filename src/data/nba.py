@@ -34,12 +34,17 @@ class NBADataSource(DataSource):
             self._cached_raw_games = df.copy()
             return df
 
-        # Default seasons: last 2 completed seasons + current season.
+        # Default seasons: CURRENT season only (2025-26).
+        # Per user direction (June 9, 2026): for betting on the 2026 NBA
+        # Finals, only the current season is relevant. Older seasons
+        # (2023-24, 2024-25) are noise that could mislead the model
+        # (different rosters, roles, form). Set explicitly to a list of
+        # pipeline years if you need historical data.
         # IMPORTANT: pass pipeline years (e.g. "2026") not API format
         # ("2025-26"). SEASON_MAP looks up str(s)[:4] so passing
         # "2025-26" maps to "2024-25" via the first 4 chars.
         if not seasons:
-            seasons = ["2024", "2025", "2026"]
+            seasons = ["2026"]
 
         api_seasons = list(dict.fromkeys(  # preserve order, dedup
             SEASON_MAP.get(str(s)[:4]) for s in seasons
