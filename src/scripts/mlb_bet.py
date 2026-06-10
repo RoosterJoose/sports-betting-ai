@@ -45,6 +45,11 @@ PP_REG_MAP = {
     "Total Bases":          "ALL_TB",
     "Runs":                 "ALL_R",
     "Hits+Runs+RBIs":       "ALL_H_R_RBI",
+    "Singles":              "ALL_1B",
+    "Doubles":              "ALL_2B",
+    "Triples":              "ALL_3B",
+    "Pitcher Fantasy Score": "ALL_P_FPTS",
+    "Hitter Fantasy Score":  "ALL_H_FPTS",
 }
 
 POSITION_MAP = {
@@ -271,7 +276,9 @@ def main():
     # ── 8. Slip builder (6 picks, mixed stats, 2+ teams) ──
     CALIBRATED_STATS = {"Earned Runs Allowed", "Hits Allowed", "Walks Allowed",
                         "Pitcher Strikeouts", "Hits", "Walks", "RBIs",
-                        "Total Bases", "Hitter Strikeouts"}
+                        "Total Bases", "Hitter Strikeouts",
+                        "Singles", "Doubles", "Triples",
+                        "Pitcher Fantasy Score", "Hitter Fantasy Score"}
 
     slip_candidates = [r for r in actionable if r["stat"] in CALIBRATED_STATS]
     slip_candidates.sort(key=lambda x: x["edge"], reverse=True)

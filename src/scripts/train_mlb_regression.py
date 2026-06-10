@@ -59,6 +59,21 @@ STAT_TARGETS = [
     ("ALL_IP",  "ip",   "all", None),
     ("ALL_R",   "r",    "all", None),
     ("ALL_H_R_RBI", None, "all", lambda df: df["h"] + df["r"] + df["rbi"]),
+    # Newly added (used by PrizePicks Singles/Doubles/Triples/Fantasy Score)
+    # Hitter Fantasy Score (PrizePicks standard):
+    # 1*1B + 2*2B + 3*3B + 4*HR + 1*RBI + 1*R + 1*BB + 1*HBP + 2*SB - 1*CS - 0.5*SO
+    # Pitcher Fantasy Score (PrizePicks standard):
+    # 3*IP + 1*SO - 1*H - 1*BB - 2*ER + 2*W - 2*L
+    ("ALL_1B",     "1b", "hitter",  None),
+    ("ALL_2B",     "2b", "hitter",  None),
+    ("ALL_3B",     "3b", "hitter",  None),
+    ("ALL_H_FPTS", None, "hitter",
+        lambda df: (df["1b"] + 2*df["2b"] + 3*df["3b"] + 4*df["hr"]
+                   + df["rbi"] + df["r"] + df["bb"] + df["hbp"]
+                   + 2*df["sb"] - df["cs"] - 0.5*df["so"])),
+    ("ALL_P_FPTS", None, "pitcher",
+        lambda df: (3*df["ip"] + df["so"] - df["h"] - df["bb"]
+                    - 2*df["er"] + 2*df["w"] - 2*df["l"])),
 ]
 
 # Statcast features that improve hitter models
@@ -95,7 +110,8 @@ def load_features():
     all_games = pd.concat([pd.read_parquet(f) for f in cache_files], ignore_index=True)
     featured = fe.build_features(all_games)
     # Merge raw stat columns back for use as targets
-    stat_cols = ["so", "er", "h", "bb", "hr", "tb", "rbi", "sb", "ip", "r", "1b", "2b", "3b", "position", "player_name", "team_abbr", "gs", "bf"]
+    stat_cols = ["so", "er", "h", "bb", "hr", "tb", "rbi", "sb", "ip", "r", "1b", "2b", "3b",
+                 "hbp", "cs", "w", "l", "sv", "position", "player_name", "team_abbr", "gs", "bf"]
     raw_keep = [c for c in stat_cols if c in all_games.columns]
     if not raw_keep:
         return featured
