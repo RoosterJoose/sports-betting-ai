@@ -30,6 +30,15 @@ MODEL_DIR = PROJECT_ROOT / "models" / "nba"
 WANG_LAMBDA = 0.25  # moderate calibration adjustment for NBA
 
 
+# FG3A caveat:
+# _load_regressor will happily load models/nba/FG3A.json — the model exists
+# and backtests 10/10 lines beating naive (formal backtest, June 9 2026,
+# see PROJECT.md). But there is no Kalshi market for 3-point attempts;
+# KXNBA3PT is makes (FG3M), not attempts. Do not add FG3A to
+# nba_bet.py MARKETS without first confirming a Kalshi attempts series
+# ticker exists. If one ever does (e.g., KXNBAG3A), the model is wired-ready.
+
+
 def _load_regressor(model_name: str):
     """Load XGBoost regressor and metadata for NBA model.
 

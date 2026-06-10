@@ -152,10 +152,13 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
 
     all_bets = []
 
-    # === 1. MLB PLAYER PROPS (KS = strikeouts, HR = home runs, TB = total bases, HRR = H+R+RBI) ===
+    # === 1. MLB PLAYER PROPS (KS, HR, TB, HRR, IP, ER, H, BB, RBI) ===
+    # Iterates all MARKET_TYPES from kalshi_mlb_unified (live + non-info_only).
+    # Currently 9 live markets; the new IP/ER/H/BB/RBI will activate
+    # the moment Kalshi lists them.
     print()
     print("  " + "-" * 66)
-    print("  1. MLB PLAYER PROPS (KS/strikeouts, HR, TB, HRR)")
+    print("  1. MLB PLAYER PROPS (KS, HR, TB, HRR, IP, ER, H, BB, RBI)")
     print("  " + "-" * 66)
     try:
         from src.scripts.kalshi_mlb_unified import load_features, MARKET_TYPES, _load_regressor, _match_player, _p_ge_line, _recency_check
@@ -175,9 +178,11 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
                 try:
                     mkts = kc.list_markets(series_ticker=series, limit=500)
                     if mkts is None or mkts.empty:
+                        print(f"  {mname:5s} ({series:10s}): no markets (Kalshi has no active listings)")
                         continue
                     mkts = mkts[mkts["ticker"].str.contains(today, regex=False, na=False)]
                     if mkts.empty:
+                        print(f"  {mname:5s} ({series:10s}): no markets for today (date={today})")
                         continue
                 except Exception:
                     continue

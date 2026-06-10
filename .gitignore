@@ -49,3 +49,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+logs/
+.env.bak
+data/nba_cache/injuries.json

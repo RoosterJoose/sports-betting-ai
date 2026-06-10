@@ -20,6 +20,14 @@ from src.data.kalshi import KalshiClient
 from src.data.nba_injuries import get_out_players, is_player_out
 from src.scripts.kalshi_nba_unified import _is_current_market, _match_player, load_features, _load_regressor, _p_ge_line
 
+# NOTE on FG3A (3-point attempts):
+# The FG3A model exists at models/nba/FG3A.json and backtests 10/10 lines
+# beating the naive baseline (formal backtest, June 9 2026 — see PROJECT.md).
+# However, it is NOT wired into the scanner here because Kalshi's NBA series
+# ticker KXNBA3PT is for 3-POINT MAKES (FG3M), not attempts. The "3PT" entry
+# below loads model FG3M, not FG3A. If Kalshi ever launches a 3PT attempts
+# market (e.g., KXNBAG3A), the FG3A model is ready to be wired by adding a
+# new tuple to MARKETS — see _load_regressor in kalshi_nba_unified.py.
 MARKETS = [
     ("PTS", "KXNBAPTS", "PTS", False), ("REB", "KXNBAREB", "REB", False),
     ("AST", "KXNBAAST", "AST", False), ("BLK", "KXNBABLK", "BLK", False),
