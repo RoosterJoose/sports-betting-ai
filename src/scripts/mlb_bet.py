@@ -15,7 +15,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
+import lightgbm as lgb
 from scipy.stats import norm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -58,28 +58,37 @@ POSITION_MAP = {
 
 
 def load_regressor(model_name):
-    path = MODEL_DIR / f"reg_{model_name.lower()}.json"
-    meta_path = MODEL_DIR / f"reg_{model_name.lower()}.meta.json"
+    """Load a LightGBM regressor (lgb_<stat>.txt) + meta + BetaCal.
+
+    train_mlb_regression.py writes LightGBM models as `lgb_<stat>.txt` with
+    companion `lgb_<stat>.meta.json`. BetaCal lives at the model-dir root
+    (models/mlb/<stat>_beta_cal.json), not in models/mlb/calibration/ (which
+    is the legacy empirical-cal dir, .gitignored).
+    """
+    name = model_name.lower()
+    path = MODEL_DIR / f"lgb_{name}.txt"
+    meta_path = MODEL_DIR / f"lgb_{name}.meta.json"
     if not path.exists() or not meta_path.exists():
         return None, None, None, None
     with open(meta_path) as f:
         meta = json.load(f)
-    model = xgb.XGBRegressor()
-    model.load_model(str(path))
-    # Load Beta Calibration if available
-    beta_cal = BetaCalibrator.load(CALIB_DIR / f"{model_name.lower()}_beta_cal.json")
-    return model, meta.get("residual_std", 1.0), meta.get("r2", 0), beta_cal
+    booster = lgb.Booster(model_file=str(path))
+    # Load BetaCal from model-dir root (where fit_mlb_beta_cal.py writes)
+    beta_cal = BetaCalibrator.load(MODEL_DIR / f"{name}_beta_cal.json")
+    return booster, meta.get("residual_std", 1.0), meta.get("r2", 0), beta_cal
 
 
-def p_ge_line(feat_row, model, residual_std, line_val, beta_cal=None):
+def p_ge_line(feat_row, booster, residual_std, line_val, beta_cal=None):
     """P(stat ≥ line_val) using normal CDF → Beta Calibration.
 
     Falls back to raw normal-CDF probability when Beta Calibration is unavailable.
     """
-    mu = model.predict(
-        pd.DataFrame([{c: feat_row.get(c, 0)
-                       for c in model.feature_names_in_}]).fillna(0)
-    )[0]
+    feature_names = booster.feature_name()
+    row = {c: feat_row.get(c, 0) for c in feature_names}
+    X = pd.DataFrame([row]).fillna(0)
+    # Ensure column order matches the booster (LightGBM is order-sensitive for prediction)
+    X = X[feature_names]
+    mu = booster.predict(X)[0]
     sigma = max(residual_std, 0.3)
     p_raw = 1.0 - norm.cdf((line_val - 0.5 - mu) / sigma)
     p_raw = max(0.001, min(0.999, float(p_raw)))
