@@ -181,15 +181,22 @@ class F5Simulator:
             return
         
         self.model = lgb.Booster(model_file=str(model_path))
-        
+
         meta_path = model_path.with_suffix(".meta.json")
         if meta_path.exists():
             with open(meta_path) as f:
                 self.meta = json.load(f)
         else:
             self.meta = {"feature_cols": []}
-        
-        self.feature_cols = self.meta.get("feature_cols", [])
+
+        # Use the model's own feature_name() as source of truth — it stores
+        # the exact list used at training time inside the .txt file itself.
+        # Falling back to meta["feature_cols"] only if the model file is empty.
+        model_features = list(self.model.feature_name())
+        if model_features:
+            self.feature_cols = model_features
+        else:
+            self.feature_cols = self.meta.get("feature_cols", [])
         print(f"  Loaded PA outcome model: {self.meta.get('n_samples', '?')} training samples, "
               f"{len(self.feature_cols)} features", flush=True)
     
@@ -197,8 +204,15 @@ class F5Simulator:
         """Predict 8-class outcome probabilities for a single PA."""
         if self.model is None:
             return np.ones(8) / 8
-        
-        vec = np.array([features.get(c, 0) for c in self.feature_cols], dtype=float).reshape(1, -1)
+
+        # Always read features from the model's own feature_name() — never
+        # trust features dict blindly. This prevents the "data has 18
+        # features, training had 17" LightGBM fatal error.
+        model_features = list(self.model.feature_name())
+        if len(model_features) != len(features) and len(model_features) == len(self.feature_cols):
+            # features dict has more keys than needed — silently ignore extras
+            pass
+        vec = np.array([features.get(c, 0) for c in model_features], dtype=float).reshape(1, -1)
         return self.model.predict(vec)[0]
     
     def simulate_half_inning(self, pitcher_features: dict, lineup_probs: list, n_sims: int = 5000) -> dict:
