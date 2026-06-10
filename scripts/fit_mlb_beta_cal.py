@@ -26,7 +26,15 @@ MODEL_DIR = PROJECT_ROOT / "models" / "mlb"
 CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "mlb"
 
 # MLB stat types to calibrate
-# Combines config/mlb.toml stat_types with the model file naming convention
+# Combines config/mlb.toml stat_types with the model file naming convention.
+# Combo stat file availability (as of 2026-06-09):
+#   H+BB       NO model file  (train_mlb_regression.py doesnt train this)
+#   SO+BB      NO model file  (train_mlb_regression.py doesnt train this)
+#   H+R+RBI    HAS lgb_h_r_rbi.txt (training script name: H_R_RBI)
+# The find_model_paths() helper checks both the new LightGBM
+# (lgb_<stat>.txt + lgb_<stat>.meta.json) and legacy XGBoost
+# (<STAT>.json + <STAT>.metrics.json) formats, so missing models are
+# skipped cleanly via the existence check in main().
 STAT_TYPES = [
     ("H", "H"),
     ("TB", "TB"),
@@ -121,38 +129,71 @@ def load_features():
     return featured
 
 
+def find_model_paths(stat_name: str):
+    """Find MLB model + metadata for a stat, supporting both formats.
+
+    Returns (model_path, meta_path, format_kind) or (None, None, None) if
+    no model is on disk. The current training script
+    (src/scripts/train_mlb_regression.py) writes LightGBM models as
+    `lgb_<stat>.txt` + `lgb_<stat>.meta.json`. An older XGBoost-based
+    training system wrote `<STAT>.json` + `<STAT>.metrics.json` (uppercase
+    with literal + signs for combos). We try the new format first, then
+    fall back to the legacy format.
+
+    Combo stats H+BB and SO+BB are NOT in the current training script's
+    STAT_TARGETS, so they have no model file and return None here.
+    """
+    # New format: lgb_<lowercase_stat>.txt, with + replaced by _
+    mn = stat_name.lower().replace("+", "_")
+    new_model = MODEL_DIR / f"lgb_{mn}.txt"
+    new_meta = MODEL_DIR / f"lgb_{mn}.meta.json"
+    if new_model.exists():
+        return new_model, new_meta, "lgb"
+
+    # Legacy format: <STAT>.json (uppercase, + signs kept)
+    legacy_model = MODEL_DIR / f"{stat_name}.json"
+    legacy_meta = MODEL_DIR / f"{stat_name}.metrics.json"
+    if legacy_model.exists():
+        return legacy_model, legacy_meta, "xgb"
+
+    return None, None, None
+
+
 def fit_calibration(stat_name: str, model_display: str, featured: pd.DataFrame):
     """Load model, run temporal test split, fit BetaCal, save results."""
     import xgboost as xgb
+    import lightgbm as lgb
 
-    # Normalize stat name for file lookup
-    mn = stat_name.lower().replace("+", "_")
-    model_path = MODEL_DIR / f"{mn}.json"
-    meta_path = MODEL_DIR / f"{mn}.metrics.json"
-
-    if not model_path.exists():
-        print(f"  {stat_name}: no model at {model_path}")
+    model_path, meta_path, fmt = find_model_paths(stat_name)
+    if model_path is None:
+        print(f"  {stat_name}: no model file (new lgb_*.txt or legacy .json)")
         return
 
-    # Load model
-    model = xgb.XGBRegressor()
-    model.load_model(str(model_path))
+    # Load model and extract feature names
+    if fmt == "lgb":
+        booster = lgb.Booster(model_file=str(model_path))
+        feature_names = booster.feature_name()
+        model = booster  # use booster uniformly for prediction below
+    else:  # xgb
+        model = xgb.XGBRegressor()
+        model.load_model(str(model_path))
+        try:
+            with open(model_path) as f:
+                mdata = json.load(f)
+            feature_names = mdata.get("learner", {}).get("feature_names", [])
+        except Exception:
+            print(f"  {stat_name}: could not extract feature names from {model_path}")
+            return
 
-    # Get feature names from model JSON
-    try:
-        with open(model_path) as f:
-            mdata = json.load(f)
-        feature_names = mdata.get("learner", {}).get("feature_names", [])
-    except Exception:
-        print(f"  {stat_name}: could not extract feature names")
-        return
-
-    # Load residual std
+    # Load residual std from meta
     std = 1.0
     if meta_path.exists():
         with open(meta_path) as f:
             meta = json.load(f)
         std = meta.get("residual_std", meta.get("mae", 1.0))
+
+    # Canonical name for cal/diag file outputs (always lowercase + underscores)
+    mn = stat_name.lower().replace("+", "_")
 
     # Get raw stat column name
     raw_col = mn  # e.g., H -> h, H+BB -> h_bb
@@ -298,9 +339,14 @@ def main():
     n_skipped = 0
     n_done = 0
     for stat_name, display in STAT_TYPES:
-        # Check if model exists before printing the header
-        mn = stat_name.lower().replace("+", "_")
-        if not (MODEL_DIR / f"{mn}.json").exists():
+        # Use find_model_paths() so we pick up both new lgb_*.txt and legacy .json
+        # files. STAT_TYPES lists all 3 combo stats; H+BB and SO+BB are skipped
+        # here because the current training script (train_mlb_regression.py)
+        # does not train them. Once models for those stats are added to
+        # STAT_TARGETS, this script will pick them up automatically.
+        model_path, _, _ = find_model_paths(stat_name)
+        if model_path is None:
+            print(f"\nCalibrating {stat_name} ({display})... SKIPPED (no model file)", flush=True)
             n_skipped += 1
             continue
         print(f"\nCalibrating {stat_name} ({display})...", flush=True)
