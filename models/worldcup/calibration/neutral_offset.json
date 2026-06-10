@@ -1,0 +1,29 @@
+{
+  "applied": true,
+  "delta_home": -0.11187694259084136,
+  "delta_draw": 0.052611178520724555,
+  "delta_away": 0.05926576407011694,
+  "cap": 0.15,
+  "n_val": 57,
+  "val_acc_before": 0.7543859649122807,
+  "val_acc_after": 0.8070175438596491,
+  "val_brier_before": 0.32339815102053376,
+  "val_brier_after": 0.30399744180588784,
+  "actual_rates": {
+    "home": 0.8070175438596491,
+    "draw": 0.19298245614035087,
+    "away": 0.0
+  },
+  "pred_means": {
+    "home": 0.6951406012688077,
+    "draw": 0.24559363466107542,
+    "away": 0.05926576407011694
+  },
+  "raw_deltas": {
+    "home": -0.11187694259084136,
+    "draw": 0.052611178520724555,
+    "away": 0.05926576407011694
+  },
+  "computed_at": "2026-06-10T12:39:35.345082",
+  "notes": "Computed from 2022 WC val (neutral venue). Apply only at is_neutral=1 matches."
+}

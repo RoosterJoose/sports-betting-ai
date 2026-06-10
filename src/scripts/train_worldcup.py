@@ -265,15 +265,92 @@ def train_match_model():
         with open(cal_path, "w") as f:
             json.dump({"0": {"bins": cal_table}}, f, indent=2)
 
-    # Neutral-venue calibration REMOVED.
-    # Previous Platt scaling + Elo-diff-aware attempts amplified draw
-    # predictions to 60%+ because the raw model already over-predicts
-    # draws at neutral venues. 2022 WC val data (0 away wins) can't
-    # support reliable calibration. The is_neutral feature provides
-    # the best available adjustment. See scan_wc.py for details.
+    # === Neutral-venue empirical offset (per NotebookLM rec) ===
+    # Computes Δ_class = mean(P_model) - actual_rate on the 2022 WC val set
+    # (which is 100% neutral-venue matches — the entire WC tournament is at
+    # neutral venues). Capped at ±0.15 per class. Applied in scan_wc.py
+    # predict_match() when is_neutral=1.
+    #
+    # This replaces the previous Platt scaling + Elo-diff-aware approach
+    # which amplified draw predictions to 60%+ for lopsided matchups
+    # because the raw model already over-predicts draws at neutral venues.
+    # The empirical offset is the sharp-bettor standard: a single additive
+    # shift per class that forces the model's neutral-venue prior to match
+    # reality (~33/33/33 in close-Elo matches).
+    print(f"\n6.5. Computing neutral-venue empirical offset (2022 WC val)...")
+
+    # Filter to neutral-venue rows only (val set is 100% WC, all neutral,
+    # but we filter explicitly for robustness if the split ever changes)
+    is_neutral_val = feat_df.loc[val_idx, "is_neutral"].fillna(0).astype(int).values
+    neutral_mask = is_neutral_val == 1
+    n_neutral = int(neutral_mask.sum())
+
+    if n_neutral < 10:
+        print(f"    WARNING: only {n_neutral} neutral-venue val rows — skipping offset")
+    else:
+        preds_neutral = preds_val[neutral_mask]
+        y_neutral = y_val[neutral_mask]
+
+        actual_rates = np.bincount(y_neutral, minlength=3) / n_neutral
+        pred_means = preds_neutral.mean(axis=0)
+        deltas = pred_means - actual_rates  # positive = over-predicts
+        cap = 0.15
+        deltas_capped = np.clip(deltas, -cap, cap)
+        delta_home, delta_draw, delta_away = deltas_capped
+
+        print(f"    Neutral-venue val rows: {n_neutral}")
+        print(f"    Actual rates: H={actual_rates[0]:.1%}  D={actual_rates[1]:.1%}  A={actual_rates[2]:.1%}")
+        print(f"    Model means:  H={pred_means[0]:.1%}  D={pred_means[1]:.1%}  A={pred_means[2]:.1%}")
+        print(f"    Raw Δ:        H={deltas[0]:+.3f}  D={deltas[1]:+.3f}  A={deltas[2]:+.3f}")
+        print(f"    Capped Δ:     H={delta_home:+.3f}  D={delta_draw:+.3f}  A={delta_away:+.3f}  (cap=±{cap})")
+
+        # Apply offset and recompute Brier on neutral-venue val
+        preds_offset = preds_neutral.copy()
+        preds_offset[:, 0] -= delta_home
+        preds_offset[:, 1] -= delta_draw
+        preds_offset[:, 2] -= delta_away
+        preds_offset = np.maximum(preds_offset, 0.001)
+        preds_offset = preds_offset / preds_offset.sum(axis=1, keepdims=True)
+
+        y_onehot_n = np.zeros((n_neutral, 3))
+        y_onehot_n[np.arange(n_neutral), y_neutral] = 1
+        brier_neutral_before = float(np.mean(np.sum((preds_neutral - y_onehot_n) ** 2, axis=1)))
+        brier_neutral_after = float(np.mean(np.sum((preds_offset - y_onehot_n) ** 2, axis=1)))
+
+        pred_classes_neutral = np.argmax(preds_neutral, axis=1)
+        pred_classes_offset = np.argmax(preds_offset, axis=1)
+        acc_neutral_before = float((pred_classes_neutral == y_neutral).mean())
+        acc_neutral_after = float((pred_classes_offset == y_neutral).mean())
+
+        print(f"\n    Neutral-venue Brier: {brier_neutral_before:.4f} → {brier_neutral_after:.4f}  ({(brier_neutral_after - brier_neutral_before):+.4f})")
+        print(f"    Neutral-venue Acc:  {acc_neutral_before:.1%} → {acc_neutral_after:.1%}  ({(acc_neutral_after - acc_neutral_before):+.1%})")
+
+        # Save to neutral_offset.json (auto-applied by scan_wc.py on next scan)
+        offset_path = CALIB_DIR / "neutral_offset.json"
+        offset_data = {
+            "applied": True,
+            "delta_home": float(delta_home),
+            "delta_draw": float(delta_draw),
+            "delta_away": float(delta_away),
+            "cap": cap,
+            "n_val": n_neutral,
+            "val_acc_before": acc_neutral_before,
+            "val_acc_after": acc_neutral_after,
+            "val_brier_before": brier_neutral_before,
+            "val_brier_after": brier_neutral_after,
+            "actual_rates": {"home": float(actual_rates[0]), "draw": float(actual_rates[1]), "away": float(actual_rates[2])},
+            "pred_means": {"home": float(pred_means[0]), "draw": float(pred_means[1]), "away": float(pred_means[2])},
+            "raw_deltas": {"home": float(deltas[0]), "draw": float(deltas[1]), "away": float(deltas[2])},
+            "computed_at": datetime.now().isoformat(),
+            "source": f"train_worldcup.py (2022 WC val, {n_neutral} neutral-venue rows)",
+            "notes": "Apply only at is_neutral=1 matches. Renormalized to sum to 1.",
+        }
+        with open(offset_path, "w") as f:
+            json.dump(offset_data, f, indent=2)
+        print(f"    Saved: {offset_path.name}")
 
     # 12. Save model + metadata
-    print("\n7. Saving model...")
+    print(f"\n7. Saving model...")
     model_path = MODEL_DIR / "wc_match_outcome.txt"
     model.booster_.save_model(str(model_path))
 

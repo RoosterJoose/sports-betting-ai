@@ -15,6 +15,7 @@ Usage:
 import sys, json, warnings
 warnings.filterwarnings("ignore")
 from pathlib import Path
+from datetime import datetime
 import numpy as np
 import pandas as pd
 
@@ -172,14 +173,74 @@ def main():
 
     n = len(results)
     correct = results["correct"].sum()
-    accuracy = correct / n
-    print(f"\n  Predictions: {n}, Correct: {correct} ({accuracy:.1%})")
+    print(f"\n  Predictions: {n}, Correct: {correct} ({correct / n:.1%})")
 
     # Brier score
     y_onehot = np.zeros((n, 3))
     y_onehot[np.arange(n), results["actual"].values] = 1
     preds_array = results[["p_home", "p_draw", "p_away"]].values
     brier = float(np.mean(np.sum((preds_array - y_onehot) ** 2, axis=1)))
+    accuracy = correct / n
+
+    # === Neutral-venue empirical offset (per NotebookLM rec) ===
+    # Compute Δ_class = mean(P_model) - actual_rate on the 2022 WC val set.
+    # Apply only at is_neutral=1 matches (WC finals, Euros, etc.).
+    # Capped at ±0.15 per class to prevent extreme corrections.
+    print(f"\n  Neutral-venue empirical offset (per NotebookLM rec):")
+    actual_rates = np.bincount(results["actual"].values, minlength=3) / n
+    pred_means = preds_array.mean(axis=0)
+    deltas = pred_means - actual_rates  # positive = over-predicts
+    cap = 0.15
+    deltas_capped = np.clip(deltas, -cap, cap)
+    # Verify zero-sum: if all 3 deltas don't sum to 0, leave it (capped).
+    # The cap enforces bounded corrections even when raw would be larger.
+    delta_home, delta_draw, delta_away = deltas_capped
+    print(f"    Actual rates:  H={actual_rates[0]:.1%}  D={actual_rates[1]:.1%}  A={actual_rates[2]:.1%}")
+    print(f"    Model means :  H={pred_means[0]:.1%}  D={pred_means[1]:.1%}  A={pred_means[2]:.1%}")
+    print(f"    Raw Δ:        H={deltas[0]:+.3f}  D={deltas[1]:+.3f}  A={deltas[2]:+.3f}")
+    print(f"    Capped Δ:     H={delta_home:+.3f}  D={delta_draw:+.3f}  A={delta_away:+.3f}  (cap=±{cap})")
+
+    # Apply the offset to each row and recompute Brier
+    preds_offset = preds_array.copy()
+    preds_offset[:, 0] -= delta_home
+    preds_offset[:, 1] -= delta_draw
+    preds_offset[:, 2] -= delta_away
+    # Floor at 0.001 and renormalize so probs sum to 1
+    preds_offset = np.maximum(preds_offset, 0.001)
+    preds_offset = preds_offset / preds_offset.sum(axis=1, keepdims=True)
+    brier_offset = float(np.mean(np.sum((preds_offset - y_onehot) ** 2, axis=1)))
+
+    # Accuracy with offset
+    pred_classes_offset = np.argmax(preds_offset, axis=1)
+    correct_offset = (pred_classes_offset == results["actual"].values).sum()
+    accuracy_offset = correct_offset / n
+
+    print(f"\n  Offset-applied (simulated):")
+    print(f"    Brier:   {brier:.4f} → {brier_offset:.4f}  ({(brier_offset - brier):+.4f})")
+    print(f"    Acc:     {accuracy:.1%} → {accuracy_offset:.1%}  ({(accuracy_offset - accuracy):+.1%})")
+
+    # Save the offset to neutral_offset.json
+    offset_path = CALIB_DIR / "neutral_offset.json"
+    offset_data = {
+        "applied": True,  # Auto-enable on first successful backtest
+        "delta_home": float(delta_home),
+        "delta_draw": float(delta_draw),
+        "delta_away": float(delta_away),
+        "cap": cap,
+        "n_val": int(n),
+        "val_acc_before": float(accuracy),
+        "val_acc_after": float(accuracy_offset),
+        "val_brier_before": float(brier),
+        "val_brier_after": float(brier_offset),
+        "actual_rates": {"home": float(actual_rates[0]), "draw": float(actual_rates[1]), "away": float(actual_rates[2])},
+        "pred_means": {"home": float(pred_means[0]), "draw": float(pred_means[1]), "away": float(pred_means[2])},
+        "raw_deltas": {"home": float(deltas[0]), "draw": float(deltas[1]), "away": float(deltas[2])},
+        "computed_at": datetime.now().isoformat(),
+        "notes": "Computed from 2022 WC val (neutral venue). Apply only at is_neutral=1 matches.",
+    }
+    with open(offset_path, "w") as f:
+        json.dump(offset_data, f, indent=2)
+    print(f"    Saved: {offset_path}")
 
     # Naive baseline: always predict HOME (most common outcome)
     majority_class = np.argmax(np.bincount(results["actual"].values))

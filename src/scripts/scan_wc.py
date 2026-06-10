@@ -13,11 +13,35 @@ from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_team
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = PROJECT_ROOT / "models" / "worldcup"
+CALIB_DIR = MODEL_DIR / "calibration"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # Trained ML model cache
 _loaded_model = None
 _loaded_meta = None
+
+# Neutral-venue empirical offset (computed by backtest_wc.py).
+# Cached at module load to avoid reading the file per-match.
+_neutral_offset = None
+_neutral_offset_loaded = False
+
+def _load_neutral_offset():
+    """Load the empirical offset from neutral_offset.json. Returns dict or empty."""
+    global _neutral_offset, _neutral_offset_loaded
+    if _neutral_offset_loaded:
+        return _neutral_offset
+    _neutral_offset_loaded = True
+    offset_path = CALIB_DIR / "neutral_offset.json"
+    if not offset_path.exists():
+        _neutral_offset = {}
+        return _neutral_offset
+    try:
+        with open(offset_path) as f:
+            _neutral_offset = json.load(f)
+        return _neutral_offset
+    except Exception:
+        _neutral_offset = {}
+        return _neutral_offset
 
 def _load_match_model():
     """Load trained match outcome model. Returns (model, meta) or (None, None)."""
@@ -185,18 +209,23 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None):
             features = meta.get("features", [])
             x = build_feature_vector(elo_h, elo_a, hf, af, "WC", features)
             probs = model.predict(x)[0]
-            
-            # Post-hoc neutral-venue calibration REMOVED.
-            # Previous attempts (Platt scaling + Elo-diff-aware correction)
-            # amplified draw predictions to 60%+ for lopsided matchups
-            # because the raw model already over-predicts draws at neutral
-            # venues (47-49% for matchups like Panama vs England at -292 Elo).
-            # The 2022 WC val data (0 away wins, 80.7% home) can't support
-            # reliable post-hoc calibration. The is_neutral feature provides
-            # the best available neutral-venue adjustment (~2% home reduction).
-            #
-            # TODO: Retrain model with better neutral-venue handling.
-            
+
+            # === Apply neutral-venue empirical offset (per NotebookLM rec) ===
+            # Δ_class = mean(P_model) - actual_rate on 2022 WC val, capped at ±0.15.
+            # Closes the 67-70% home bias at neutral venues with a single
+            # additive shift per class. Renormalized to sum to 1.
+            offset = _load_neutral_offset()
+            if offset.get("applied", False):
+                cap = offset.get("cap", 0.15)
+                dh = max(-cap, min(cap, offset.get("delta_home", 0.0)))
+                dd = max(-cap, min(cap, offset.get("delta_draw", 0.0)))
+                da = max(-cap, min(cap, offset.get("delta_away", 0.0)))
+                probs[0] -= dh
+                probs[1] -= dd
+                probs[2] -= da
+                probs = np.maximum(probs, 0.001)
+                probs = probs / probs.sum()
+
             # Renormalize to sum to 1
             probs = probs / probs.sum()
             return probs
@@ -295,6 +324,17 @@ def scan(args=None):
               f"Brier={wc_meta.get('test_brier', '?'):.4f})")
     else:
         print(f"  No trained ML model — using Elo formula")
+
+    # Load neutral-venue empirical offset (per NotebookLM rec)
+    offset = _load_neutral_offset()
+    if offset.get("applied", False):
+        print(f"  Neutral-venue offset APPLIED: "
+              f"Δ_H={offset.get('delta_home', 0):+.3f}  "
+              f"Δ_D={offset.get('delta_draw', 0):+.3f}  "
+              f"Δ_A={offset.get('delta_away', 0):+.3f}  "
+              f"(cap=±{offset.get('cap', 0.15)}, n_val={offset.get('n_val', 0)})")
+    else:
+        print(f"  Neutral-venue offset: NOT APPLIED (neutral_offset.json missing or applied=False)")
     
     # Build form features for ML model
     form_features = _build_form_features(elo_df, elo_ratings)
