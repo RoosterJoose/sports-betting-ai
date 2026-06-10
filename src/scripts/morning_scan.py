@@ -47,6 +47,7 @@ from src.scripts.kalshi_nhl_unified import (
 from src.scripts.kalshi_ufc import get_ufc_bets
 from src.scripts.kalshi_cfb import get_cfb_bets
 from src.execution.kalshi_trader import KalshiTrader
+from src.utils.staleness import check_all_sports
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -167,6 +168,29 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
         print("  " + "!" * 66)
         print()
         auto_bet = False
+
+    # ── Staleness gate: refuse to scan with stale player game data ──
+    # Set STALENESS_OVERRIDE=1 in env to bypass (use with caution).
+    # This is the guard that would have caught the June 9 NBA Finals
+    # bug where the cache was 14 months old and the model was being
+    # used to suggest bets for a current-season game.
+    if os.environ.get("STALENESS_OVERRIDE", "").strip() != "1":
+        results = check_all_sports()
+        failed = [r for r in results if not r["is_ok"]]
+        if failed:
+            print()
+            print("  " + "!" * 70)
+            print("  !!! STALENESS CHECK FAILED — refusing to suggest bets with stale data")
+            print("  " + "!" * 70)
+            for r in failed:
+                latest = r["latest_date"].strftime("%Y-%m-%d") if r["latest_date"] else "N/A"
+                print(f"  !!! {r['sport'].upper()}: latest game {latest} is {r['age_days']}d old")
+            print("  !!!")
+            print("  !!! Fix: refresh the stale sport's cache and retry.")
+            print("  !!! Override (DANGEROUS): STALENESS_OVERRIDE=1 python -m src.scripts.morning_scan --paper")
+            print("  " + "!" * 70)
+            print()
+            return
 
     print("=" * 70)
     print(f"  MORNING SCAN - {datetime.now().strftime('%Y-%m-%d %H:%M')}")

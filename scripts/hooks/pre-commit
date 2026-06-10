@@ -1,17 +1,43 @@
 #!/usr/bin/env bash
-# Pre-commit hook: verify codegraph sees all key symbols as having callers.
-# Catches dynamic-import-in-try/except regressions (like the one fixed in
-# commit 3945c11 where 9 sport scanners were invisible to codegraph).
+# Pre-commit hook: TWO checks
+#  1. STALENESS: abort if any sport's player-game-logs parquet is older
+#     than 7 days while that sport is in season. Catches the bug where
+#     the model was used to suggest bets for a game whose data was never
+#     in the cache (NBA Finals 2026, discovered June 9).
+#  2. CODEGRAPH: verify codegraph sees all key symbols as having callers.
+#     Catches dynamic-import-in-try/except regressions (the one fixed in
+#     commit 3945c11 where 9 sport scanners were invisible to codegraph).
 #
 # Skip with: git commit --no-verify
 # Re-run manually: ./scripts/hooks/pre-commit
 set -e
 
+# === CHECK 1: STALENESS =================================================
+# For each sport in season, latest game_date must be within 7 days.
+# Hard-fails (cannot be overridden here — only morning_scan honors env).
+# Prefer the repo-local venv python (has pandas/numpy); fall back to
+# system python3 (will skip if deps missing).
+echo
+echo "  [1/2] staleness check (sport cache freshness)..."
+if [ -x ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+elif command -v python3 &> /dev/null; then
+  PY="python3"
+else
+  echo "  [staleness] no python found — skipping (not recommended)"
+  PY=""
+fi
+if [ -n "$PY" ]; then
+  if ! "$PY" -m src.utils.staleness; then
+    echo
+    echo "  STALENESS CHECK FAILED — refusing to commit"
+    echo "  Tip: refresh the stale sport's cache, or use --no-verify to skip"
+    exit 1
+  fi
+fi
+
+# === CHECK 2: CODEGRAPH =================================================
 # Key symbols whose callers must NOT disappear. Add new ones here.
-# These are the modules/files that other code should always be able
-# to statically import. If any of these go from "has callers" to
-# "no callers", something was wrapped in a try/except or got moved.
-#
 # Use MODULE PATHS (src.x.y) — codegraph indexes by module, not by
 # class name. Class-name lookups (KalshiClient, RiskManager) return
 # "no callers" because class methods aren't tracked as callers.
@@ -22,7 +48,8 @@ SYMBOLS=(
   "src.data.kalshi"
 )
 
-# --- Skip gracefully if codegraph not installed -------------------------
+echo
+echo "  [2/2] codegraph callers check..."
 if ! command -v codegraph &> /dev/null; then
   echo "  [codegraph] CLI not installed — skipping pre-commit check"
   echo "  (install with: npm i -g @codegraph/cli)"
