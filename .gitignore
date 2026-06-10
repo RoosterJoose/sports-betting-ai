@@ -16,6 +16,9 @@ data/paper_trades/
 models/mlb/f5_multiclass*.txt
 models/mlb/calibration/
 models/mlb/*.json
+# Whitelist calibration files (committed alongside models for reproducibility)
+!models/mlb/*_beta_cal.json
+!models/mlb/*_calibration_diag.json
 models/mlb/lgb_*.txt
 models/nfl/*.json
 models/nba/*.json
