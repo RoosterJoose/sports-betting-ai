@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # (sport, season_start_md, season_end_md, parquet_glob, date_col)
 SPORT_CONFIG = [
     ("nba",  (10, 1), (6, 30),  "data/nba_cache/game_logs_v14.parquet", "game_date"),
-    ("mlb",  (4, 1),  (10, 31), "data/mlb_cache/game_logs*.parquet",    "game_date"),
+    ("mlb",  (3, 20), (11, 15), "data/cache/mlb/game_logs*.parquet",    "game_date"),
     ("nfl",  (9, 1),  (2, 28),  "data/nfl_cache/*.parquet",             "game_date"),
     ("nhl",  (10, 1), (6, 30),  "data/nhl_cache/*.parquet",             "game_date"),
     ("wnba", (5, 1),  (10, 31), "data/wnba_cache/wnba_games.parquet",   "game_date"),
