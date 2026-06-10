@@ -188,7 +188,10 @@ class FotMobScraper:
     to be blocked by Cloudflare.
     """
 
-    API_URL = "https://www.fotmob.com/api/matchDetails"
+    # /api/matchDetails returns 404; the live endpoint is /api/data/matchDetails
+    # (discovered June 10 via Playwright network interception against
+    # https://www.fotmob.com/matches?date=20260608)
+    API_URL = "https://www.fotmob.com/api/data/matchDetails"
     BASE_URL = "https://www.fotmob.com"
     USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -272,18 +275,54 @@ class FotMobScraper:
             page.close()
 
     def _parse_api_state(self, state, match_id: int) -> dict:
-        """Extract home/away lineups from FotMob's __INITIAL_STATE__ structure.
+        """Extract home/away lineups from FotMob's matchDetails JSON.
 
-        FotMob's structure (as of 2026):
-            state.matchDetails.matchId[matchId].content.lineup.home.starting[].players
-        Falls back gracefully if the structure changes.
+        Two known structures (auto-detected, June 10 2026):
+          A) /api/data/matchDetails — flat: {general, content, ...}
+             -> content.lineup.{homeTeam, awayTeam} (note camelCase!)
+                Each side has keys: starting, bench, formation, coach, ...
+                Each item in starting is a player dict directly.
+          B) /__INITIAL_STATE__/matchDetails — nested:
+             state.matchDetails.matchId[matchId].content.lineup.home.starting[].players
         """
         if not state or not isinstance(state, dict):
             return {"home": [], "away": [], "status": "no_state",
                     "fetched_at": datetime.now().isoformat()}
 
         try:
-            # Navigate the nested structure defensively
+            # ── STRUCTURE A: flat /api/data/matchDetails ─────────────
+            if "content" in state and "general" in state:
+                content = state.get("content", {})
+                lineup = content.get("lineup", {})
+                if not lineup:
+                    return {"home": [], "away": [], "status": "not_published",
+                            "fetched_at": datetime.now().isoformat()}
+
+                result = {"home": [], "away": [], "kickoff": None, "status": "ok",
+                          "fetched_at": datetime.now().isoformat()}
+
+                for src_key, dst_key in (("homeTeam", "home"), ("awayTeam", "away")):
+                    side_data = lineup.get(src_key, {})
+                    starting = side_data.get("starting", [])
+                    if not isinstance(starting, list):
+                        starting = []
+                    result[dst_key] = [
+                        {"name": p.get("name", ""),
+                         "position": p.get("positionString", p.get("position", "")),
+                         "shirt": p.get("shirtNumber", p.get("jerseyNumber", ""))}
+                        for p in starting if isinstance(p, dict) and p.get("name")
+                    ]
+
+                # Kickoff from top-level general
+                general = state.get("general", {})
+                if isinstance(general, dict):
+                    kickoff = general.get("matchTimeUTC") or general.get("matchTimeUTCDate")
+                    if kickoff:
+                        result["kickoff"] = kickoff
+
+                return result
+
+            # ── STRUCTURE B: nested __INITIAL_STATE__ ────────────────
             match_details = state.get("matchDetails", {})
             by_id = match_details.get("matchId", {})
             match_data = by_id.get(str(match_id)) or by_id.get(int(match_id))
@@ -303,7 +342,6 @@ class FotMobScraper:
             for side in ("home", "away"):
                 side_data = lineup.get(side, {})
                 starting = side_data.get("starting", [])
-                # Each item in starting can be {players: [...]} or directly a player list
                 players = []
                 for entry in starting:
                     if isinstance(entry, dict) and "players" in entry:
@@ -316,7 +354,6 @@ class FotMobScraper:
                     for p in players if p.get("name")
                 ]
 
-            # Kickoff time
             match_header = content.get("matchFacts", {}) or content.get("general", {})
             kickoff = match_header.get("kickoffTime") or match_data.get("kickoffTime")
             if kickoff:
