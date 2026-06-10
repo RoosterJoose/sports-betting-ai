@@ -17,10 +17,15 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.config.settings import CONFIG_DIR, PROJECT_ROOT
 from src.features.mlb import MLBFeatureEngineer
-from src.models.calibrator import BetaCalibrator
+from src.models.calibrator import BetaCalibrator, IsotonicCalibrator
 from src.models.distributions import p_ge_stat
 import toml, lightgbm as lgb
 from scipy.stats import norm
+
+# Stats where Isotonic is preferred over BetaCal (per NotebookLM: low-count
+# tail-sensitive props benefit from non-parametric isotonic regression).
+# Must match ISOTONIC_PREFERRED in kalshi_mlb_unified.py.
+ISOTONIC_PREFERRED = {"ip", "r", "rbi", "sb", "hr", "blk", "stl"}
 
 MODEL_DIR = PROJECT_ROOT / "models" / "mlb"
 CALIB_DIR = MODEL_DIR / "calibration"
@@ -81,14 +86,27 @@ def backtest_stat(featured, stat_name, raw_col, pos_filter, compute_fn):
         print(f"  {stat_name:8s}: Model not found")
         return
 
-    # Load model + BetaCal
+    # Load model + calibrators
+    # Prefer Isotonic when (a) stat is in ISOTONIC_PREFERRED, and (b) the
+    # *_isotonic_cal.json file exists. Otherwise fall back to BetaCal.
+    # This lets the formal backtest validate the Isotonic improvements
+    # end-to-end (not just the BetaCal baseline).
     model = lgb.Booster(model_file=str(model_path))
     with open(meta_path) as f:
         meta = json.load(f)
     residual_std = meta.get("residual_std", 1.0)
     model_features = meta.get("features", model.feature_name())
     beta_cal = BetaCalibrator.load(cal_path)
-    beta_str = f"BetaCal: a={beta_cal.a:.3f}, b={beta_cal.b:.3f}, c={beta_cal.c:.3f}" if beta_cal._fitted else "No BetaCal"
+    iso_path = CALIB_DIR / f"{mn}_isotonic_cal.json"
+    iso_cal = IsotonicCalibrator.load(iso_path) if iso_path.exists() else None
+
+    use_iso = (mn in ISOTONIC_PREFERRED) and (iso_cal is not None and iso_cal._fitted)
+    if use_iso:
+        cal_str = f"Isotonic: xs={len(iso_cal._xs)}, ys={len(iso_cal._ys)}"
+    elif beta_cal._fitted:
+        cal_str = f"BetaCal: a={beta_cal.a:.3f}, b={beta_cal.b:.3f}, c={beta_cal.c:.3f}"
+    else:
+        cal_str = "No calibration"
 
     # Filter by position
     df = featured.copy()
@@ -147,7 +165,7 @@ def backtest_stat(featured, stat_name, raw_col, pos_filter, compute_fn):
 
     print(f"\n  {stat_name:8s}: σ={residual_std:.3f}  test_n={len(df_test)}  "
           f"y_mean={y_mean:.2f}  y_max={y_max:.0f}  lines=[{low}..{high})")
-    print(f"           {beta_str}")
+    print(f"           {cal_str}")
 
     # Compute P(>=line) for each line using distribution-appropriate mapping
     # Use vectorized p_ge_stat (pass whole mu array) for performance
@@ -156,8 +174,11 @@ def backtest_stat(featured, stat_name, raw_col, pos_filter, compute_fn):
         p_raw = p_ge_stat(stat_name, mu, max(residual_std, 0.3), line_val)
         p_raw = np.clip(p_raw, 0.001, 0.999)
 
-        # BetaCal
-        if beta_cal._fitted:
+        # Apply calibrator in priority order: Isotonic (if preferred + available)
+        # → BetaCal → raw. Matches the live scanner cascade.
+        if use_iso:
+            p_cal = iso_cal(p_raw)
+        elif beta_cal._fitted:
             p_cal = beta_cal(p_raw)
         else:
             p_cal = p_raw

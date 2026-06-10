@@ -6,6 +6,77 @@ from typing import Optional
 import numpy as np
 from scipy.special import expit, logit
 from scipy.stats import norm
+from sklearn.isotonic import IsotonicRegression
+
+
+class IsotonicCalibrator:
+    """Non-parametric isotonic regression calibrator (per NotebookLM rec).
+
+    Recommended over BetaCal for low-count MLB player props because:
+    - Non-parametric (no shape assumption)
+    - Fixes severe tail overconfidence that plagues low-count predictions
+    - Monotonic by construction
+    - Robust to small sample sizes
+
+    Stores thresholds and predictions as parallel arrays.
+    """
+
+    def __init__(self):
+        self._iso = IsotonicRegression(out_of_bounds="clip", y_min=0.001, y_max=0.999)
+        self._fitted = False
+        self._xs: np.ndarray = np.array([])
+        self._ys: np.ndarray = np.array([])
+
+    def fit(self, probs: np.ndarray, labels: np.ndarray):
+        p = np.clip(probs, 1e-6, 1 - 1e-6)
+        y = labels.astype(int)
+        self._iso.fit(p, y)
+        # Cache for serialization
+        self._xs = np.array(self._iso.X_thresholds_)
+        self._ys = np.array(self._iso.y_thresholds_)
+        self._fitted = True
+
+    def calibrate(self, probs: np.ndarray) -> np.ndarray:
+        if not self._fitted or len(self._xs) == 0:
+            return probs
+        p = np.atleast_1d(np.asarray(probs, dtype=float))
+        # Use np.interp directly — bypasses sklearn's IsotonicRegression
+        # internal state (X_min_/X_max_/f_) which can be brittle across
+        # sklearn versions. The xs/ys arrays are stored as a sorted
+        # step function by IsotonicRegression.fit().
+        result = np.interp(p, self._xs, self._ys)
+        return np.clip(result, 0.001, 0.999)
+
+    def save(self, path: Path):
+        with open(path, "w") as f:
+            json.dump({
+                "type": "isotonic",
+                "xs": self._xs.tolist(),
+                "ys": self._ys.tolist(),
+            }, f)
+
+    @classmethod
+    def load(cls, path: Path) -> "IsotonicCalibrator":
+        ic = cls()
+        if path.exists():
+            with open(path) as f:
+                data = json.load(f)
+            if data.get("type") == "isotonic" and len(data.get("xs", [])) > 0:
+                ic._xs = np.array(data["xs"])
+                ic._ys = np.array(data["ys"])
+                # No need to reconstruct sklearn's IsotonicRegression object —
+                # calibrate() uses np.interp on _xs/_ys directly. This avoids
+                # the AttributeError on X_min_/X_max_/f_ across sklearn versions.
+                ic._fitted = True
+        return ic
+
+    def __call__(self, prob: float | np.ndarray) -> float | np.ndarray:
+        if not self._fitted:
+            return prob
+        result = self.calibrate(prob)
+        if isinstance(prob, (int, float, np.floating)):
+            return float(result[0] if result.ndim > 0 else result)
+        return result
 
 
 class PlattCalibrator:

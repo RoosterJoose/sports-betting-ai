@@ -171,6 +171,15 @@ def train_regressor(featured, stat_name, raw_col, pos_filter="pitcher", compute_
 
     y = df[target_col].values
 
+    # Per NotebookLM: low-count props (mean<1) get severe tail overconfidence.
+    # Log-transform target during training to stabilize variance, then
+    # back-transform via expm1 at inference (handled in the scanner/predictor).
+    LOG_TRANSFORM_STATS = {"HR", "SB", "STL", "BLK", "TOV"}
+    if stat_name.upper() in LOG_TRANSFORM_STATS:
+        y_raw = y.copy()
+        y = np.log1p(np.maximum(y, 0))
+        print(f"  Log-transform applied (y+1 -> log) for {stat_name}", flush=True)
+
     available = [c for c in feature_cols if c in df.columns]
     print(f"  Features: {len(available)}")
     X = df[available].copy()

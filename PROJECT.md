@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates, **NBA formal backtest verified 13/17 live**)
+Last updated: **2026-06-09** (Session: WC Elo-adjusted form + expanded data + is_neutral, NBA injury pipeline, compounder safety gates, **NBA formal backtest verified 13/17 live**, **MLB full audit with NotebookLM integration**)
 
 ---
 
@@ -112,27 +112,27 @@ Data Source → Cache (parquet) → Feature Engineer → Model → Prediction �
 
 ## Model Inventory
 
-### 🟢 MLB — Best-calibrated, 11 active + 7 info_only
+### 🟢 MLB — Best-calibrated, 11 active + 7 info_only (full audit June 9)
 
 MLB models are the most reliable. All backtested against naive baselines.
 
-| Stat | R² | Backtest | Status |
-|------|-----|----------|--------|
-| SO (Strikeouts) | ~0.33 | ✅ Beats naive | **live** |
-| HR (Home Runs) | ~0.15 | ✅ Beats naive | **live** |
-| TB (Total Bases) | ~0.27 | ✅ Beats naive | **live** |
-| HRR (H+R+RBI) | ~0.12 | ✅ Beats naive | **live** |
-| IP (Innings Pitched) | ~0.80 | ✅ Best model | **live** |
-| ER (Earned Runs) | ~0.14 | ✅ Beats naive | **live** |
-| H (Hits) | ~0.13 | ✅ Beats naive | **live** |
-| BB (Walks) | ~0.41 | ✅ Beats naive | **live** |
-| RBI | ~0.02 | ✅ Beats naive | **live** |
-| R (Runs) | ~0.017 | 🟡 Weak | info_only |
-| SB (Stolen Bases) | ~0.02 | 🟡 Weak | info_only |
+| Stat | R² | Backtest | Status | Bet? |
+|------|-----|----------|--------|------|
+| SO (Strikeouts) | ~0.33 | 5/5 (100%) | **live** | 🟢 **YES** — gentle BetaCal, strongest signal |
+| HR (Home Runs) | ~0.15 | 3/4 (75%) | **live** | 🟡 **YES (small)** — sharpest market, line of 1 dominates |
+| TB (Total Bases) | ~0.27 | 5/5 (100%) | **live** | 🟡 **YES** — needs weather data for full confidence |
+| HRR (H+R+RBI) | ~0.12 | 5/5 (100%) | **live** | 🟡 **YES** — composite stat, leakier signal |
+| IP (Innings Pitched) | ~0.80 | 5/5 (100%) | **live** | 🟡 **YES** — best R², but needs opener detection |
+| ER (Earned Runs) | ~0.14 | 4/4 (100%) | **live** | 🟡 **YES** — needs bullpen quality features |
+| H (Hits) | ~0.13 | 5/5 (100%) | **live** | 🟡 **YES** — similar to ER |
+| BB (Walks) | ~0.41 | 4/4 (100%) | **live** | 🟡 **YES** — needs umpire zone data |
+| RBI | ~0.02 | 4/4 (100%) | **live** | 🟡 **YES (small)** — needs lineup context |
+| R (Runs) | ~0.017 | 2/4 (50%) | info_only | 🔴 **NO** — fails naive baseline |
+| SB (Stolen Bases) | ~0.02 | 1/4 (25%) | info_only | 🔴 **NO** — worst performer |
 
-**Training**: `src/scripts/train_mlb_regression.py` — XGBoost regressors with BetaCal.
-**Scanner**: `src/scripts/kalshi_mlb_unified.py` — loads models, matches Kalshi markets, computes p_ge_line.
-**Features**: Rolling averages (3/5/10/20 game), pitcher handedness, park factors, opponent quality.
+**Training**: `src/scripts/train_mlb_regression.py` — LightGBM regressors with BetaCal + IsotonicCal.
+**Scanner**: `src/scripts/kalshi_mlb_unified.py` — loads models, matches Kalshi markets, computes p_ge_line with calibration cascade (empirical → isotonic → beta → Wang).
+**Features**: Rolling averages (3/5/10/20 game), pitcher handedness, park factors, opponent quality, **platoon matchup (opp_lhb_pct), weather (wind_out_to_cf_mph, strong_wind_out_flag) — added June 9, retraining pending**.
 
 ### 🟡 NBA — Models retrained June 2026, injury filter active, **formally backtested June 9**
 
@@ -291,6 +291,64 @@ Ran `python -m src.scripts.backtest_nba` against 14,244 temporal-split test rows
 
 **Action taken:** None required. The 12 live models are wired in `nba_bet.py` → `morning_scan.py`. The 4 partial stats remain gated by `info_only=True` in the scanner. FG3A is a strong model held in reserve — if Kalshi ever launches a 3PT attempts market, the model is ready. This formally closes the gap from SESSION.md ("NBA backtest — models are fresh but not verified to beat naive").
 
+### MLB Full Audit — June 9, 2026 (NotebookLM-integrated)
+
+Conducted full audit of all 11 MLB models with the goal of "would I bet my own money on each one?" Cross-referenced findings with NotebookLM research on sharp MLB prop modeling, low-count stat calibration, weather effects, and Kalshi market structure.
+
+#### Per-Stat Verdict ("Would I Bet?")
+
+| Stat | R² | Backtest | Bias | Verdict | Why |
+|------|-----|----------|------|---------|-----|
+| **SO** | 0.33 | 5/5 (100%) | 3.6% | 🟢 **YES** | Gentle BetaCal, strong signal, opp_k_pct + platoon features in place |
+| **HR** | 0.15 | 3/4 (75%) | 1.6% | 🟡 **YES (small)** | Line=1 dominates (75% of bets), market is sharpest. Weather data needed for full confidence |
+| **TB** | 0.27 | 5/5 (100%) | 6.4% | 🟡 **YES** | Weather features coded but retraining pending. Composite of singles+XBH+HR |
+| **HRR** | 0.12 | 5/5 (100%) | 5.2% | 🟡 **YES (small)** | Composite stat (H+R+RBI), leakier signal. Lineup context would help |
+| **IP** | 0.80 | 5/5 (100%) | 1.3% | 🟡 **YES** | Star model, R²=0.80. **Opener detection is critical** — openers distort IP props (stubbed, data not yet integrated) |
+| **ER** | 0.14 | 4/4 (100%) | 6.5% | 🟡 **YES** | Bullpen quality features would improve (stubbed). BetaCal c=-0.51 acceptable |
+| **H** | 0.13 | 5/5 (100%) | 4.7% | 🟡 **YES** | Similar to ER. Stadium-specific hit rates not yet encoded |
+| **BB** | 0.41 | 4/4 (100%) | 4.9% | 🟡 **YES** | Strong R². **Umpire zone data is the gap** — 1-2 SO shift between umpires (stubbed) |
+| **RBI** | 0.02 | 4/4 (100%) | 5.5% | 🟡 **YES (small)** | Low R² but backtest passes. Lineup context (who's batting around them) would help |
+| **R** | 0.017 | 2/4 (50%) | 4.7% | 🔴 **NO** | Fails naive baseline. R² near zero. Dropped from scanner |
+| **SB** | 0.02 | 1/4 (25%) | 0.5% | 🔴 **NO** | Worst performer. Lowest-event count stat. Dropped from scanner |
+
+#### NotebookLM Findings — Integration Status
+
+| # | Finding | Status | Where |
+|---|---------|--------|-------|
+| 1 | SP IP distribution / opener % | 🟡 Stubbed | `src/data/mlb_external.py:detect_opener()` — returns False until FanGraphs integrated |
+| 2 | Wind/HR (15+ mph out to CF) | 🟡 Fetcher built, not yet in model | `src/data/mlb_weather.py` fetches 31 parks × 7 days. Merge logic added to `src/features/mlb.py` but retraining pending |
+| 3 | Platoon matchup (6+ opp-handed) | 🟡 Code added, retraining pending | `opp_lhb_pct`, `opp_rhb_pct`, `extreme_platoon_lhh/rhh` in `src/features/mlb.py` |
+| 4 | Umpire zone (1-2 SO shift) | 🟡 Stubbed | `src/data/mlb_external.py:get_umpire_zone_size()` — returns 0 (league avg) until UmpireScorecards integrated |
+| 5 | SB base-out state | 🔴 N/A | R/SB dropped from scanner (fail backtest) |
+| 6 | Kalshi fee zone (3.5% drag in 40-60c) | ✅ **APPLIED** | `kalshi_mlb_unified.py:FEE_ZONE_LOW/HIGH/MIN_EDGE` — 40-60c now requires 7.5% edge |
+| 7 | Isotonic Regression for low-count | ✅ **APPLIED** | `src/models/calibrator.py:IsotonicCalibrator` + `fit_mlb_isotonic_cal.py` — 5/5 calibrators fitted, bias reduced from ±0.04 to ±0.0000 |
+| 7 | Log-transform `y_trans = log(1+y)` | 🟡 Code added, retraining pending | `train_mlb_regression.py:LOG_TRANSFORM_STATS` — applies to HR/SB/STL/BLK/TOV |
+| 8 | Pitcher/hitter variance (55-65% F5) | 🟡 Research only | Used as design heuristic, not encoded as feature |
+
+**Summary: 2.5 of 8 fully applied (Isotonic, fee-zone, partial confidence gate), 5.5 partial (code in place, need retraining), 1 deferred to external data.**
+
+#### Phase 1-4 Implementation Status
+
+- **Phase 1 (Unblock what's passing):** ✅ Complete — info_only flags flipped for HR/TB/HRR/IP/ER/H/BB/RBI; R and SB dropped; IsotonicCal fitted for IP/R/RBI/HR/SB
+- **Phase 2 (High-impact features):** 🟡 Partial — weather fetcher built, platoon matchup coded, log-transform option added. **Retraining pending (process stuck, needs debug)**
+- **Phase 3 (Backtest expansion):** 🟡 Documented — current backtest uses 4-5 line values per stat, expansion to 8-12 is straightforward but not yet implemented
+- **Phase 4 (Bet-grade gates):** ✅ Complete — fee-zone filter + per-stat confidence gate (`STAT_LIVE_QUALITY` map) both in `kalshi_mlb_unified.py`
+
+#### What Blocks 100% Confidence
+
+1. **Retraining stuck**: The new weather merge code in `src/features/mlb.py` is causing the training process to hang. Needs debug (likely the per-row `.apply()` for home park computation, or a weather parquet schema issue).
+2. **External data not integrated**: Umpire zone (UmpireScorecards) and opener detection (FanGraphs) are stubbed but return league-average defaults.
+3. **Backtest line-value sample size**: 4-5 line values per stat is borderline meaningful. Expanding to 8-12 would tighten confidence intervals.
+4. **Small R² for composite stats**: HRR (0.12), RBI (0.02), H (0.13) — these are leaky signals by nature. Backtest passes but the underlying regressor is weak.
+
+#### Final Bet Recommendation
+
+**I would bet my own money on SO with high conviction.** It's the only stat with both (a) gentle calibration parameters, (b) strong R², and (c) all the gap features already in place.
+
+For the other 8 "live" markets, I would bet **with reduced size and only in favorable Kalshi price ranges** (outside the 40-60c fee zone, with edge > 7.5%). The combination of backtest-passes-but-low-R² + missing high-impact features (weather, platoon, umpire) means edge estimates have wider confidence bands than the backtest suggests.
+
+**R and SB: would not bet.** Both fail naive baseline. Dropped from scanner.
+
 ### What Still Needs Validation
 - [ ] Fix Miles McBride injury filter gap
 - [x] ~~Run formal NBA backtest (all 17 stats vs naive)~~ ✅ **13/17 PASS, 4/17 partial (info_only)** — June 9
@@ -298,6 +356,9 @@ Ran `python -m src.scripts.backtest_nba` against 14,244 temporal-split test rows
 - [ ] UFC: retrain without odds features OR integrate live odds
 - [ ] WNBA: retrain player-level models
 - [ ] Verify CFB model quality when season approaches
+- [ ] **MLB: complete retraining with weather + platoon + log-transform features** (code in place, training process needs debug)
+- [ ] **MLB: integrate live umpire zone data (UmpireScorecards)** — currently stubbed
+- [ ] **MLB: integrate opener detection for IP model** — currently stubbed
 
 ---
 
@@ -314,6 +375,17 @@ src/scripts/train_ufc.py       # Merge overwrite fix
 src/execution/kalshi_trader.py # Sports-only filter (blocks non-sports)
 src/scripts/morning_scan.py    # COMP type guard, safety label
 .env                           # BETTING_ENABLED=false
+
+# MLB audit additions (June 9, second pass):
+src/models/calibrator.py       # Added IsotonicCalibrator class (per NotebookLM)
+src/scripts/kalshi_mlb_unified.py  # Phase 1: info_only flags flipped for 7 models, R/SB dropped
+                                # Phase 4: fee-zone filter (40-60c → 7.5% min edge), STAT_LIVE_QUALITY gate
+src/scripts/fit_mlb_isotonic_cal.py  # NEW: fits IsotonicCal for IP/R/RBI/HR/SB
+src/data/mlb_weather.py        # NEW: open-meteo weather fetcher, 31 parks, 7-day forecast
+src/data/mlb_external.py       # NEW: umpire/opener/bullpen stubs (data sources not yet integrated)
+src/features/mlb.py            # Added platoon matchup (opp_lhb_pct, extreme_platoon) + weather merge
+src/scripts/train_mlb_regression.py  # Log-transform option for low-count targets (HR/SB/STL/BLK/TOV)
+models/mlb/calibration/*_isotonic_cal.json  # NEW: 5 Isotonic calibrators fitted
 ```
 
 ## Session Handoff Check

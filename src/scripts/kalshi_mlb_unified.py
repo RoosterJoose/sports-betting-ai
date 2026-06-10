@@ -42,9 +42,22 @@ CALIB_DIR = MODEL_DIR / "calibration"
 
 WANG_LAMBDA = 0.30  # Fallback when empirical calibration not available
 
+# Per Phase 4: Kalshi fee-zone awareness.
+# Per NotebookLM: Kalshi taker fees in 40-60c "dead zone" consume up to
+# 3.5% of capital at risk. Boost min_edge requirement in that range.
+FEE_ZONE_LOW = 0.40
+FEE_ZONE_HIGH = 0.60
+FEE_ZONE_MIN_EDGE = 0.075  # 7.5% edge required in 40-60c range (vs 5% elsewhere)
+
 # Module-level calibration singletons
 _calibrator: EmpiricalCalibrator | None = None
 _beta_calibrators: dict[str, BetaCalibrator] = {}
+_isotonic_calibrators: dict[str, "IsotonicCalibrator"] = {}
+
+# Stats that benefit from Isotonic over BetaCal (low-count, tail-sensitive).
+# Per NotebookLM: low-count props have severe tail overconfidence that
+# Isotonic Regression handles better than parametric BetaCal.
+ISOTONIC_PREFERRED: set[str] = {"ip", "r", "rbi", "sb", "hr", "blk", "stl"}
 
 
 def _get_cal():
@@ -64,6 +77,19 @@ def _get_beta_cal(stat_name: str) -> BetaCalibrator | None:
     bc = BetaCalibrator.load(path)
     _beta_calibrators[key] = bc
     return bc if bc._fitted else None
+
+
+def _get_isotonic_cal(stat_name: str):
+    """Load per-stat IsotonicCalibrator from calibration dir (cached)."""
+    from src.models.calibrator import IsotonicCalibrator
+    key = stat_name.lower()
+    if key in _isotonic_calibrators:
+        ic = _isotonic_calibrators[key]
+        return ic if ic._fitted else None
+    path = CALIB_DIR / f"{key}_isotonic_cal.json"
+    ic = IsotonicCalibrator.load(path)
+    _isotonic_calibrators[key] = ic
+    return ic if ic._fitted else None
 
 # registry: (model_name, raw_col, series_ticker, position_filter, title_pattern)
 # pattern groups: player_name, line_value
@@ -85,7 +111,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*home\s*runs?\??$",
         "desc": "home runs",
-        "info_only": True,
+        "info_only": False,  # Phase 1: 3/4 backtest — sharpest market, kept live with caution
     },
     {
         "name": "TB",
@@ -94,7 +120,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*total\s*bases?\??$",
         "desc": "total bases",
-        "info_only": True,
+        "info_only": False,  # Phase 1: 5/5 (100%) backtest
     },
     {
         "name": "HRR",
@@ -103,7 +129,7 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits\s*\+\s*runs\s*\+\s*RBIs?\??$",
         "desc": "hits+runs+RBIs",
-        "info_only": True,
+        "info_only": False,  # Phase 1: 5/5 (100%) backtest
     },
     # New market types (no active markets as of June 2026 — patterns inferred)
     {
@@ -113,8 +139,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*outs?\??$",
         "desc": "pitching outs",
-        "info_only": True,
-        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
+        "info_only": False,  # Phase 1: 5/5 (100%) backtest — uses Isotonic cal
     },
     {
         "name": "ER",
@@ -123,8 +148,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*earned\s*runs?\??$",
         "desc": "earned runs allowed",
-        "info_only": True,
-        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
+        "info_only": False,  # Phase 1: 4/4 (100%) backtest
     },
     {
         "name": "H",
@@ -133,8 +157,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*hits?\??$",
         "desc": "hits allowed",
-        "info_only": True,
-        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
+        "info_only": False,  # Phase 1: 5/5 (100%) backtest
     },
     {
         "name": "BB",
@@ -143,18 +166,7 @@ MARKET_TYPES = [
         "position": "pitcher",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*walks?\??$",
         "desc": "walks allowed",
-        "info_only": True,
-        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
-    },
-    {
-        "name": "R",
-        "model_name": "R",
-        "series_ticker": "KXMLBR",
-        "position": "hitter",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*runs?\??$",
-        "desc": "runs",
-        "info_only": True,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
+        "info_only": False,  # Phase 1: 4/4 (100%) backtest
     },
     {
         "name": "RBI",
@@ -163,19 +175,10 @@ MARKET_TYPES = [
         "position": "hitter",
         "pattern": r"^(.+?):\s*(\d+)\+?\s*RBIs?\??$",
         "desc": "RBIs",
-        "info_only": True,
-        "pattern_note": "unverified — no backtest yet. Update when model passes naive baseline.",
+        "info_only": False,  # Phase 1: 4/4 (100%) backtest — uses Isotonic cal
     },
-    {
-        "name": "SB",
-        "model_name": "SB",
-        "series_ticker": "KXMLBSB",
-        "position": "hitter",
-        "pattern": r"^(.+?):\s*(\d+)\+?\s*stolen\s*bases?\??$",
-        "desc": "stolen bases",
-        "info_only": True,
-        "pattern_note": "unverified — update when Kalshi lists these markets",
-    },
+    # R dropped: 2/4 (50%) backtest — fails naive baseline
+    # SB dropped: 1/4 (25%) backtest — worst, fails naive baseline
 ]
 
 def _load_regressor(model_name):
@@ -266,8 +269,14 @@ def _p_ge_line(row, model, residual_std, line_val, stat_name=None):
             return p_cal, float(mu)
         # Single bin = old format (flat per-line rate) — fall through
 
-    # ── Step 2: Beta Calibration (per-stat) ────────────────────────────────
+    # ── Step 2: Isotonic (preferred for low-count) or Beta Calibration ────
     if stat_name is not None:
+        if stat_name.lower() in ISOTONIC_PREFERRED:
+            iso_cal = _get_isotonic_cal(stat_name)
+            if iso_cal is not None and iso_cal._fitted:
+                p_cor = iso_cal(p_raw)
+                p_cor = min(0.999, max(0.001, float(p_cor)))
+                return p_cor, float(mu)
         beta_cal = _get_beta_cal(stat_name)
         if beta_cal is not None and beta_cal._fitted:
             p_cor = beta_cal(p_raw)
@@ -511,6 +520,28 @@ def main():
                 yes_edge = p_yes - yes_mid
                 no_edge = (1 - p_yes) - (1 - yes_mid)
 
+                # Phase 4: Per-stat confidence gate (only flag as live-bettable
+                # if the backtest says it's reliable). These flags match
+                # PROJECT.md and the June 9 formal backtest.
+                # Stats that fail naive OR have broken BetaCal stay info_only.
+                STAT_LIVE_QUALITY = {
+                    "SO":  True,   # 5/5 (100%), gentle cal
+                    "HR":  True,   # 3/4 (75%), sharpest market — small bet size
+                    "TB":  True,   # 5/5 (100%)
+                    "H_R_RBI": True,  # 5/5 (100%)
+                    "IP":  True,   # 5/5 (100%), Isotonic cal
+                    "ER":  True,   # 4/4 (100%)
+                    "H":   True,   # 5/5 (100%)
+                    "BB":  True,   # 4/4 (100%)
+                    "RBI": True,   # 4/4 (100%), Isotonic cal
+                    "R":   False,  # 2/4 (50%) fails
+                    "SB":  False,  # 1/4 (25%) worst
+                }
+                quality_pass = STAT_LIVE_QUALITY.get(model_name, False)
+
+                # AND both gates: info_only flag (per market type) AND quality gate
+                effective_info_only = info_only or (not quality_pass)
+
                 opps.append({
                     "type": name,
                     "player": row.get("player_name", player_name),
@@ -525,7 +556,7 @@ def main():
                     "recency_rate": round(recency_rate, 3) if recency_rate >= 0 else None,
                     "recency_used": recency_used,
                     "ticker": ticker,
-                    "info_only": info_only,
+                    "info_only": effective_info_only,
                 })
             except Exception:
                 pass
@@ -597,7 +628,12 @@ def main():
                 mkt_y = o["mkt_yes"]
                 p_y = o["p_yes"]
 
-                if yes_edge > 0.05 and 0.15 < mkt_y < 0.75:
+                # Phase 4: Apply fee-zone edge boost (40-60c requires 7.5%)
+                if FEE_ZONE_LOW <= mkt_y <= FEE_ZONE_HIGH:
+                    required_edge = FEE_ZONE_MIN_EDGE
+                else:
+                    required_edge = 0.05
+                if yes_edge > required_edge and 0.15 < mkt_y < 0.75:
                     bid = min(98, int(mkt_y * 100) + 1)
                     side = "yes"
                     direction = "BUY YES"
