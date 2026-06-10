@@ -15,7 +15,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 PROJECT_ROOT=$(pwd)
-REFRESH_SCRIPT="${PROJECT_ROOT}/bin/refresh_mlb_cache.sh"
+REFRESH_SCRIPT="${PROJECT_ROOT}/bin/refresh_mlb_everything.sh"
+LEGACY_REFRESH_SCRIPT="${PROJECT_ROOT}/bin/refresh_mlb_cache.sh"
+LOG_FILE_NAME="refresh_mlb_everything.log"
 CRON_ID="# mlb-daily-auto-refresh"
 SCHEDULE_HOUR=6
 SCHEDULE_MIN=0
@@ -41,7 +43,7 @@ if $DO_STATUS; then
     fi
     echo ""
     echo "=== Refresh log (last 10 lines) ==="
-    tail -n 10 "${HOME}/logs/refresh_mlb_cache.log" 2>/dev/null || echo "  (no log yet)"
+    tail -n 10 "${HOME}/logs/${LOG_FILE_NAME}" 2>/dev/null || echo "  (no log yet)"
     exit 0
 fi
 
