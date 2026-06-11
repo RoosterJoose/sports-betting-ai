@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-10** (Evening session: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`. Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
+Last updated: **2026-06-10** (Late-evening session: **WC lineup auto-population cron job** (`bin/populate_wc_lineups.py` — iterates KXWCGAME markets, resolves FotMob matchIds, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`), **pre-step hook in `morning_scan.py`** (section 2.5 runs the populate job before the WC scan), **`scripts/install-cron.sh` extended** (installs hourly WC lineups cron `0 7-23 11-19 6,7 *` during WC 2026 window June 11 - July 19 alongside the daily report), **26/26 unit tests pass** for ticker parsing + time-window filtering. Earlier in the evening: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`, **UFC 111→107-feature retrain** (removed 4 odds features + fixed `IndexError` in train_ufc.py), **WC paper-trade re-run** (no regression from UFC gap closure). Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
 
 ---
 
@@ -196,7 +196,7 @@ MLB models are the most reliable. All backtested against naive baselines.
 10. ✅ **Shrunk-offset variant** (`src/scripts/shrunk_offset_sweep.py`): blended the 2022-WC global delta (Δ_H=-0.112) with the pooled 2023+ delta (Δ_H=-0.054) at shrinkage_weight=**0.20** (20% 2022, 80% pooled). New delta in `neutral_offset.json`: **Δ_H=-0.066, Δ_D=+0.020, Δ_A=+0.046** (with full `shrinkage_components` provenance). OOS 2023+ neutral-venue (n=87) Brier: **0.2681 → 0.2636 (−0.0045, +1.7%)** vs un-shrunk 0.2663 (−0.0018, +0.7%). **EC now also ✅ helps** (Brier 0.3596 → 0.3563, was +0.0011 with un-shrunk). Sweep covered w=0.0–1.0 in 0.1 steps; Brier monotonically worsened as w grew past 0.2 — the 2022-WC signal really is too extreme. `scan_wc.py` picks up the new values automatically (no code change needed).
 
 **⚠️ Remaining gaps** (June 10):
-- **No live lineup data**: `data/cache/worldcup/lineups.json` and `data/cache/worldcup/fotmob_ids.json` don't exist yet. The FotMob scraper returned HTTP 404 on the first test match (Portugal vs Nigeria, ID 5293170) — the URL hash slug is not the API matchId. Need a real numeric matchId from FotMob's `/api/matches?date=YYYY-MM-DD` endpoint.
+- ~~**No live lineup data**~~: ✅ **RESOLVED June 10 late evening** — `bin/populate_wc_lineups.py` is the auto-population job (iterates KXWCGAME markets, resolves FotMob matchIds via `/api/data/matches?date=...`, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`). Two wiring layers: (1) **hourly cron** via `scripts/install-cron.sh` (schedule: `0 7-23 11-19 6,7 *` = 7am-11pm, June 11 - July 19, WC 2026 window) running `bin/populate_wc_lineups.py`; (2) **pre-step hook** in `morning_scan.py` section 2.5 (subprocess with `--window 90 --lookahead 4`, swallows errors so morning_scan is never blocked). Dry-run verified: 216 KXWCGAME markets → 72 unique matches → 2 in 24h horizon → 1 FotMob matchId resolved (Mexico vs RSA, 4667751), 1 needs-resolve (Korea vs Czechia — FotMob hasn't listed yet, graceful skip). **26/26 unit tests pass** for ticker parsing + time-window filtering. Live verification pending: Bolivia vs Algeria lineups publish ~01:00 UTC June 11, ~60 min before kickoff.
 - **No star-player post-hoc impact**: `key_player_out=1` only does a small model perturbation. Need a `-5pp to missing-star team` adjustment at prediction time until enough lineup data accumulates to retrain.
 - **No goal-total / player-prop model**: Scanner only supports 1X2 match-winner markets. No goals O/U, no BTTS, no player props.
 
@@ -274,6 +274,9 @@ Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated
 | `118e13b` | **test(wc)**: tests/conftest.py + pytest config + 11/11 unit tests for compute_key_player_out(), LineupCache, load_star_players() |
 | `4d3a083` | **feat(wc)**: shrunk-offset variant — w=0.20 (20% 2022-WC + 80% pooled 2023+), Brier 0.2681 → 0.2636 (−0.0045, +1.7%), EC now also helps |
 | (uncommitted) | **feat(wc)**: phantom-edge filter in scan_wc.py (skip `model_p > 3*fair_p AND fair_p < 0.10`) + **OOS validation** of empirical offset on 2023+ test set (`validate_offset_oos.py`): neutral-venue Brier 0.2681 → 0.2663 (−0.0018, +0.7%), Acc 79.3% → 80.5% (+1.1pp). Offset GENERALIZES. |
+| (uncommitted) | **feat(wc)**: lineup auto-population cron job (`bin/populate_wc_lineups.py`) + 26 unit tests (`tests/test_populate_wc_lineups.py`) + `scripts/install-cron.sh` WC 2026 hourly cron (`0 7-23 11-19 6,7 *`) + `morning_scan.py` section 2.5 pre-step hook. Closes the "No live lineup data" gap. |
+| `8b88613` | **fix(ufc)**: append CV models to list + retrain without odds features (111→107 features, no r_odds, train_date 2026-06-10) |
+| `2785153` | **docs**: mark UFC odds-feature starvation gap as RESOLVED |
 
 ### World Cup 2026 readiness — honest assessment
 
@@ -490,7 +493,7 @@ Paper `morning_scan --paper` run after retraining:
 - [ ] Fix Miles McBride injury filter gap
 - [x] ~~Run formal NBA backtest (all 17 stats vs naive)~~ ✅ **13/17 PASS, 4/17 partial (info_only)** — June 9
 - [x] ~~Post-hoc neutral-venue calibration for WC~~ ✅ **DONE June 10** — empirical offset (Δ_H=-0.112, Δ_D=+0.053, Δ_A=+0.059), Brier -0.0080 to -0.0194
-- [ ] **WC: populate FotMob lineup cache + verify scraper end-to-end with a real match ID**
+- [x] ~~**WC: populate FotMob lineup cache + verify scraper end-to-end with a real match ID**~~ ✅ **DONE June 10 late evening** — `bin/populate_wc_lineups.py` (288 LOC) + `tests/test_populate_wc_lineups.py` (26 unit tests) + `scripts/install-cron.sh` extension (`0 7-23 11-19 6,7 *` cron, WC 2026 window only) + `morning_scan.py` pre-step hook (section 2.5, subprocess wrapper). Dry-run: 1/2 eligible matches got FotMob matchId resolved; second needs another cron iteration. Live test pending Bolivia vs Algeria ~01:00 UTC June 11.
 - [x] ~~**WC: add phantom-edge filter**~~ ✅ **DONE June 10** — `scan_wc.py` skips `model_p > 3*fair_p AND fair_p < 0.10` with `[PHANTOM-FILTERED]` log
 - [x] ~~**WC: validate offset on 2023+ test set (out-of-sample)**~~ ✅ **DONE June 10** — `validate_offset_oos.py`: n=2,693, neutral-venue Brier 0.2681 → 0.2663 (−0.0018, +0.7%), offset GENERALIZES
 - [x] ~~**WC: shrunk-offset variant to soften 2022-WC over-correction**~~ ✅ **DONE June 10** — `shrunk_offset_sweep.py`: w=0.20 (20% 2022, 80% pooled 2023+), Brier 0.2681 → 0.2636 (−0.0045, +1.7%), EC now also helps
@@ -513,6 +516,8 @@ Paper `morning_scan --paper` run after retraining:
 ```
 # WC empirical offset + key_player_out (June 10, evening):
 src/data/fotmob.py             # NEW: FotMobScraper (Playwright) + LineupCache + compute_key_player_out
+                                # UPDATED June 10: API_URL /api/matchDetails -> /api/data/matchDetails
+                                # (404 fix), _parse_api_state handles flat content.lineup.{homeTeam,awayTeam}
 data/wc_star_players.json      # NEW: top ~150 WC 2026 players by team code
 src/data/world_cup.py          # build_feature_dataset() + build_feature_vector() now support key_player_out
 src/scripts/train_worldcup.py  # feature_cols includes key_player_out, auto-recomputes offset on retrain
@@ -521,6 +526,12 @@ src/scripts/backtest_wc.py     # Applies offset, reports before/after Brier+acc
 models/worldcup/calibration/neutral_offset.json  # NEW: Δ values, before/after metrics
 tests/conftest.py              # NEW: project-root conftest for pytest sys.path
 tests/test_fotmob.py           # NEW: 11 unit tests (compute_key_player_out, LineupCache, load_star_players)
+tests/test_fotmob_live.py      # NEW: opt-in live e2e test (`--runlive`); verifies scraper against real matchId
+tests/test_populate_wc_lineups.py  # NEW June 10 late evening: 26 unit tests for ticker parser, time-window filtering, _parse_kickoff, etc.
+bin/find_fotmob_matchid.py     # NEW June 10: CLI helper to find real FotMob matchIds by date (real-browser Playwright)
+bin/populate_wc_lineups.py     # NEW June 10 late evening: 288 LOC cron-grade job; iterates KXWCGAME markets, resolves FotMob matchIds (async Playwright), scrapes lineups (sync Playwright in worker thread via asyncio.to_thread), writes cache files. Idempotent, --dry-run safe, --verbose debug.
+src/scripts/morning_scan.py    # UPDATED June 10 late evening: new _pre_step_populate_wc_lineups() + section 2.5 invokes the bin/populate_wc_lineups.py job via subprocess (--window 90 --lookahead 4) before the WC scan
+scripts/install-cron.sh        # UPDATED June 10 late evening: new --no-wc-lineups flag, second cron line (0 7-23 11-19 6,7 *) installs WC lineup auto-populator for the WC 2026 window (June 11 - July 19, 7am-11pm hourly). --status and --remove handle both crons.
 pyproject.toml                 # [project.optional-dependencies] dev=pytest, [tool.pytest.ini_options]
 
 # WC earlier session (June 10, before empirical offset):

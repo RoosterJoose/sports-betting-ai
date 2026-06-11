@@ -51,6 +51,61 @@ from src.utils.staleness import check_all_sports
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
+def _pre_step_populate_wc_lineups(verbose=True):
+    """Pre-step hook: refresh the FotMob lineup cache 60-90 min before
+    each WC match so key_player_out fires at scan time.
+
+    Runs `bin/populate_wc_lineups.py` as a subprocess (isolate Playwright
+    lifecycle, avoid sync/async issues we already debugged in the bin/
+    script itself). Window is widened to 90 min here so the morning
+    scan — which runs at ~9am local — still has a chance to populate
+    the cache for early-evening WC matches (FotMob publishes lineups
+    ~60 min before kickoff). All exceptions are swallowed with a
+    warning so the rest of morning_scan is never blocked.
+
+    Returns the subprocess CompletedProcess (or None if bin/ missing).
+    """
+    import subprocess
+    bin_path = PROJECT_ROOT / "bin" / "populate_wc_lineups.py"
+    if not bin_path.exists():
+        if verbose:
+            print(f"  [wc-lineups] bin/populate_wc_lineups.py not found — skipping")
+        return None
+    # Use a wider window in the morning scan so afternoon matches are
+    # also covered. 4h lookahead covers WC evening + early-night slots.
+    cmd = [
+        sys.executable, str(bin_path),
+        "--window", "90", "--lookahead", "4",
+    ]
+    if verbose:
+        print(f"  [wc-lineups] running: {bin_path.name} (window=90min, lookahead=4h)")
+    try:
+        result = subprocess.run(
+            cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+            timeout=180,  # cap at 3min; Playwright is slow but 2 matches is enough
+        )
+        if verbose:
+            # Only print the SUMMARY lines (the rest is verbose cron-grade log)
+            for line in result.stdout.splitlines():
+                if any(k in line for k in ("SUMMARY", "→ ", " → ", "cached", "scraped",
+                                            "ERROR", "WARNING", "Skipped")):
+                    print(f"    {line}")
+            if result.returncode != 0:
+                tail = "\n".join(result.stderr.splitlines()[-3:]) if result.stderr else ""
+                print(f"  [wc-lineups] non-zero exit ({result.returncode}) — continuing")
+                if tail:
+                    print(f"    stderr: {tail}")
+        return result
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print(f"  [wc-lineups] timed out after 180s — continuing (cache may be stale)")
+        return None
+    except Exception as e:
+        if verbose:
+            print(f"  [wc-lineups] error: {e} — continuing")
+        return None
+
 # MLB team code -> full name mapping
 MLB_TEAMS = {
     "ARI": "Arizona D-backs", "ATL": "Atlanta Braves", "BAL": "Baltimore Orioles",
@@ -335,6 +390,17 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
             print("  Model not available - skipping")
     except Exception as e:
         print(f"  F5 error: {e}")
+
+    # === 2.5. WC Lineup Cache Refresh (pre-step for section 3) ===
+    # FotMob publishes lineups ~60 min before kickoff. The hourly
+    # cron job (scripts/install-cron.sh) is the primary mechanism, but
+    # we also refresh here so a manual morning_scan run at ~9am
+    # benefits from any lineups that published in the last hour.
+    print()
+    print("  " + "-" * 66)
+    print("  2.5. WC LINEUP CACHE REFRESH (pre-step for section 3)")
+    print("  " + "-" * 66)
+    _pre_step_populate_wc_lineups(verbose=True)
 
     # === 3. World Cup 2026 ===
     print()
