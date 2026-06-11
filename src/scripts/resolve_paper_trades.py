@@ -151,9 +151,21 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
 
         if result is not None and str(result).strip() not in ("", "none", "None"):
             is_settled = True
-            result_f = _safe_float(result, default=0.0)
-            won = (result_f >= 0.5) if side == "yes" else (result_f < 0.5)
-            settle_price_f = result_f
+            # Kalshi's `result` field is a STRING ("yes" or "no") on settled
+            # markets — not a float. Previous code did `_safe_float(result)`
+            # which returned 0.0 for any string, so EVERY YES-side bet was
+            # marked LOST regardless of actual outcome. (Bug: lifetime NBA
+            # 0/889 won as a result.) Use the string directly.
+            result_str = str(result).strip().lower()
+            if result_str == "yes":
+                settle_price_f = 1.0
+            elif result_str == "no":
+                settle_price_f = 0.0
+            else:
+                # Fallback: treat as numeric (older API responses or
+                # rare float-shaped result). _safe_float handles None/''/NaN.
+                settle_price_f = _safe_float(result, default=0.5)
+            won = (settle_price_f >= 0.5) if side == "yes" else (settle_price_f < 0.5)
         elif status.lower() in ("settled", "closed"):
             is_settled = True
             if settle_price is not None and str(settle_price).strip() not in ("", "none", "None"):
@@ -162,9 +174,14 @@ def resolve_pending_trades(sport: str = None, model_name: str = None,
             else:
                 won = None
         elif yes_bid == 0 and yes_ask == 0:
-            is_settled = True
-            won = False if side == "yes" else True
-            settle_price_f = 0.0
+            # bid=ask=0 means the book is empty — could be either side settled.
+            # Previous code hardcoded `won=False if side=='yes'` which marked
+            # YES-side markets as LOST even when they actually settled YES.
+            # We can't tell which side won from bid/ask alone, so skip —
+            # the `result` field is the authoritative source; if Kalshi didn't
+            # return it, the settlement is genuinely unknowable here.
+            skipped += 1
+            continue
         elif yes_bid >= 0.99 and yes_ask >= 0.99:
             is_settled = True
             won = True if side == "yes" else False
