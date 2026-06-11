@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-10** (Late-evening session: **WC lineup auto-population cron job** (`bin/populate_wc_lineups.py` — iterates KXWCGAME markets, resolves FotMob matchIds, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`), **pre-step hook in `morning_scan.py`** (section 2.5 runs the populate job before the WC scan), **`scripts/install-cron.sh` extended** (installs hourly WC lineups cron `0 7-23 11-19 6,7 *` during WC 2026 window June 11 - July 19 alongside the daily report), **26/26 unit tests pass** for ticker parsing + time-window filtering. Earlier in the evening: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`, **UFC 111→107-feature retrain** (removed 4 odds features + fixed `IndexError` in train_ufc.py), **WC paper-trade re-run** (no regression from UFC gap closure). Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
+Last updated: **2026-06-10** (Late-evening session: **WC paper-trade re-run verdict updated** to be conditional on the shrunk offset — +3.4pp post-shrinkage ROI is the correct baseline, pre-shrinkage +27.6pp was an over-correction; the shrunk offset generalizes better OOS at the cost of smaller in-sample ROI lift, which is the right trade-off for WC 2026. Earlier in the late-evening session: **WC lineup auto-population cron job** (`bin/populate_wc_lineups.py` — iterates KXWCGAME markets, resolves FotMob matchIds, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`), **pre-step hook in `morning_scan.py`** (section 2.5 runs the populate job before the WC scan), **`scripts/install-cron.sh` extended** (installs hourly WC lineups cron `0 7-23 11-19 6,7 *` during WC 2026 window June 11 - July 19 alongside the daily report), **26/26 unit tests pass** for ticker parsing + time-window filtering. Earlier in the evening: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`, **UFC 111→107-feature retrain** (removed 4 odds features + fixed `IndexError` in train_ufc.py), **WC paper-trade re-run** (no regression from UFC gap closure). Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
 
 ---
 
@@ -277,6 +277,26 @@ Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated
 | (uncommitted) | **feat(wc)**: lineup auto-population cron job (`bin/populate_wc_lineups.py`) + 26 unit tests (`tests/test_populate_wc_lineups.py`) + `scripts/install-cron.sh` WC 2026 hourly cron (`0 7-23 11-19 6,7 *`) + `morning_scan.py` section 2.5 pre-step hook. Closes the "No live lineup data" gap. |
 | `8b88613` | **fix(ufc)**: append CV models to list + retrain without odds features (111→107 features, no r_odds, train_date 2026-06-10) |
 | `2785153` | **docs**: mark UFC odds-feature starvation gap as RESOLVED |
+
+### WC paper-trade re-run verdict (post-shrinkage, June 10 late evening)
+
+Re-ran `src/scripts/paper_trade_wc.py` on the 2023+ neutral-venue subset (n=87 matches, the same set used in `validate_offset_oos.py`) under two market-price assumptions, comparing the **shrunk** offset (Δ_H=-0.066, Δ_D=+0.020, Δ_A=+0.046, the version in `neutral_offset.json`) to no offset.
+
+| Scenario | Raw ROI | Offset ROI | Δ |
+|---|---|---|---|
+| **A: uniform 33% market** (n=87) | +344.3% | **+347.7%** | **+3.4pp** |
+| **B: market = raw model** | 0 trades | −0.1% (4 trades) | neutral |
+
+Results saved to `models/worldcup/paper_trade_2023plus_neutral.json`.
+
+**Verdict: ✅ KEEP the shrunk offset, BUT the +3.4pp ROI lift is the post-shrinkage baseline (NOT the pre-shrinkage +27.6pp).** The shrunk offset is the correct trade-off:
+
+- **Pre-shrinkage** (un-shrunk Δ_H=−0.112, fitted to 2022 WC val only): showed a flashy **+27.6pp ROI lift** in-sample on the same 87-match set, but that gain was over-correction — the 2022 WC signal was too extreme to generalize. The shrunk-offset sweep (`shrunk_offset_sweep.py`) showed Brier monotonically worsens as `w` grows past 0.2 toward the un-shrunk 2022-WC values.
+- **Post-shrinkage** (Δ_H=−0.066, w=0.20: 20% 2022-WC + 80% pooled 2023+): lifts ROI by a more modest **+3.4pp** in-sample, but **OOS Brier improves more** (−0.0045 vs the un-shrunk −0.0018 on the same 2023+ neutral-venue subset) and **EC also helps** (was +0.0011 with un-shrunk, now −0.0033 with shrunk). EC is the more out-of-sample-like of the two 2023+ tournaments (n=43, Asian Cup vs Copa America n=44), so this is the honest test.
+
+**The smaller in-sample ROI lift is the COST of better OOS generalization — that is the correct trade-off for a model that has to work on 39 days of brand-new WC 2026 matches where the 2022 distribution may not apply.** A +27.6pp lift on 87 in-sample matches is meaningless if it doesn't survive on the next 87. Max drawdown stable at 8.8% across both raw and offset runs.
+
+**Recommendation: do NOT "un-shrink" the offset to chase the +27.6pp number** — that's exactly the kind of in-sample overfit that makes a backtest look great and a live book look bad. The shrunk values stay. `scan_wc.py` picks them up from `neutral_offset.json` automatically (no code change needed).
 
 ### World Cup 2026 readiness — honest assessment
 
