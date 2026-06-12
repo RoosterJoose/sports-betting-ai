@@ -14,7 +14,9 @@ Usage::
 """
 
 import json
+import re
 import time
+import unicodedata
 from datetime import datetime, date
 from pathlib import Path
 
@@ -101,8 +103,125 @@ def get_out_players(force_refresh: bool = False) -> set:
     return out
 
 
+# === Fuzzy name-matching fallback (closes the McBride + suffix gap) ===
+# ESPN's displayName and Kalshi's market title can differ in ways that broke
+# the previous exact-match filter:
+#   - Suffixes: ESPN "Michael Porter Jr." vs Kalshi "Michael Porter"
+#   - Roman numerals: ESPN "Marvin Bagley III" vs Kalshi "Marvin Bagley"
+#   - Nicknames: Kalshi "Miles 'Deuce' McBride" vs ESPN "Miles McBride"
+#   - Accents: ESPN "Luka Dončić" vs Kalshi "Luka Doncic" (diacritics stripped)
+#   - Punctuation: "Butler III." vs "Butler III" (trailing period)
+#
+# `_normalize_name()` strips all of these so "michael porter jr" ==
+# "michael porter" == "michael porter jr." in the lookup.
+_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _strip_accents(s: str) -> str:
+    """Strip diacritics via Unicode NFKD decomposition (Dončić -> Doncic)."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize a name for fuzzy comparison.
+
+    - lowercase
+    - strip diacritics (Dončić -> Doncic)
+    - strip punctuation (. , ' ")
+    - strip generational suffixes (Jr, Sr, II, III, IV, V)
+    - collapse whitespace
+
+    Examples
+    --------
+    >>> _normalize_name("Michael Porter Jr.")
+    'michael porter'
+    >>> _normalize_name("Marvin Bagley III")
+    'marvin bagley'
+    >>> _normalize_name("Luka Dončić")
+    'luka doncic'
+    >>> _normalize_name("Miles 'Deuce' McBride")
+    'miles deuce mcbride'
+    """
+    if not name:
+        return ""
+    s = name.strip().lower()
+    s = _strip_accents(s)
+    # Strip all punctuation (anything not letter/whitespace/period/apostrophe)
+    s = re.sub(r"[^\w\s]", " ", s)
+    # Remove generational suffixes
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", " ", s)
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _names_match(a: str, b: str, threshold: float = 0.85) -> bool:
+    """Check if two names refer to the same player (fuzzy match).
+
+    Uses multi-stage heuristics, best match wins:
+      1. Exact normalized match → True
+      2. Last name match + first-initial match → True
+      3. Last name match + shared first part (handles nicknames) → True
+      4. rapidfuzz ratio (if installed) >= threshold → True
+      5. Character-overlap ratio (fallback) >= threshold → True
+    """
+    a_n = _normalize_name(a)
+    b_n = _normalize_name(b)
+    if not a_n or not b_n:
+        return False
+    if a_n == b_n:
+        return True
+
+    a_parts = a_n.split()
+    b_parts = b_n.split()
+    a_last = a_parts[-1]
+    b_last = b_parts[-1]
+    if a_last != b_last:
+        # Different last names — definitely not the same player
+        return False
+
+    a_first = a_parts[0]
+    b_first = b_parts[0]
+
+    # 2. First-initial match (handles "Luka Doncic" vs "Luka Dončić",
+    # and "M. Porter Jr." vs "Michael Porter")
+    if a_first[0] == b_first[0]:
+        return True
+
+    # 3. Shared non-suffix token (handles "Miles Deuce McBride" vs
+    # "Miles McBride" where 'miles' is shared)
+    a_set = set(a_parts)
+    b_set = set(b_parts)
+    shared = a_set & b_set
+    if len(shared) >= 1 and a_first in shared:
+        return True
+
+    # 4. rapidfuzz if available
+    try:
+        from rapidfuzz import fuzz
+        if fuzz.ratio(a_n, b_n) / 100.0 >= threshold:
+            return True
+    except ImportError:
+        pass
+
+    # 5. Character-overlap fallback (Jaccard on character bigrams)
+    def bigrams(s):
+        return {s[i:i+2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
+    bg_a, bg_b = bigrams(a_n), bigrams(b_n)
+    if bg_a and bg_b:
+        overlap = len(bg_a & bg_b) / max(len(bg_a | bg_b), 1)
+        if overlap >= 0.7:
+            return True
+
+    return False
+
+
 def is_player_out(player_name: str, out_set: set | None = None) -> bool:
     """Check if a player is OUT, with optional pre-fetched set for speed.
+
+    Uses **fuzzy name matching** so that ESPN-vs-Kalshi name mismatches
+    (suffixes, roman numerals, nicknames, accents) still get filtered.
 
     Parameters
     ----------
@@ -113,4 +232,13 @@ def is_player_out(player_name: str, out_set: set | None = None) -> bool:
     """
     if out_set is None:
         out_set = get_out_players()
-    return player_name.strip().lower() in out_set
+    if not player_name or not out_set:
+        return False
+    # Fast path: exact (case-insensitive) match
+    if player_name.strip().lower() in out_set:
+        return True
+    # Slow path: fuzzy match against every OUT name (≤ a few hundred)
+    for out_name in out_set:
+        if _names_match(player_name, out_name):
+            return True
+    return False

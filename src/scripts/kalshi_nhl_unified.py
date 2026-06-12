@@ -304,6 +304,7 @@ def main():
                     stat_name=name, beta_cal=beta_cal,
                 )
                 yes_edge = p_yes - yes_mid
+                no_edge = (1.0 - p_yes) - (1.0 - yes_mid)
 
                 label = f"{pname} {line_val}+ {desc}"
                 all_opps.append({
@@ -313,6 +314,8 @@ def main():
                     "model_prob": round(p_yes, 4),
                     "market_prob": round(yes_mid, 4),
                     "edge": round(yes_edge, 4),
+                    "yes_edge": round(yes_edge, 4),
+                    "no_edge": round(no_edge, 4),
                     "contracts": 1,
                     "player": pname,
                     "team": "",
@@ -344,27 +347,78 @@ def main():
             print(f"  {bt:5s} {player:25s} {bet_str:20s} {edge_str:>8s} {o.get('price_cents', 0):3d}c")
 
     if args.bet:
-        print(f"\n--- PLACING YES ORDERS ---")
+        # NO-side logic (mirrors kalshi_mlb_unified.py):
+        # For each opportunity, compute both yes_edge and no_edge, take the
+        # side with the larger absolute edge. Sort by max(|yes_edge|, |no_edge|)
+        # descending so the most aggressive opportunities fill first.
+        # Cap per-bet dollar risk at 5% of bankroll, max 25 contracts.
+        print(f"\n--- PLACING ORDERS (max-edge side per opportunity) ---")
+        bet_opps = [o for o in all_opps if not o.get("info_only", False)]
+        bet_opps.sort(key=lambda o: max(abs(o.get("yes_edge", o.get("edge", 0))),
+                                         abs(o.get("no_edge", 0))), reverse=True)
+
+        # Daily loss circuit breaker
+        starting_balance = client.get_balance()
+        daily_loss_limit = 0.10  # 10% max daily loss
+        daily_pnl = 0.0
         placed = 0
-        for o in all_opps:
-            if placed >= 6:
+        for o in bet_opps:
+            if placed >= 12:
                 break
-            if o.get("info_only", False):
+            yes_edge = o.get("yes_edge", o.get("edge", 0))
+            no_edge = o.get("no_edge", 0)
+            p_y = o.get("model_prob", 0.5)
+            mkt_y = o.get("market_prob", 0.5)
+            mkt_n = 1.0 - mkt_y
+
+            if daily_pnl <= -starting_balance * daily_loss_limit:
+                print(f"  DAILY LOSS LIMIT HIT (-${abs(daily_pnl):.2f}), stopping")
+                break
+
+            # Pick the side with the larger edge
+            if no_edge > yes_edge and no_edge > 0:
+                side = "no"
+                direction = "BUY NO"
+                edge = no_edge
+                bet_mid = mkt_n
+            elif yes_edge > 0:
+                side = "yes"
+                direction = "BUY YES"
+                edge = yes_edge
+                bet_mid = mkt_y
+            else:
                 continue
-            edge = o["edge"]
-            if edge < 0.05 or o["market_prob"] < 0.10 or o["market_prob"] > 0.80:
+
+            if edge < 0.05:
                 continue
-            bid = min(98, max(1, int(o["market_prob"] * 100) + 1))
-            b = client.get_balance()
+            if bet_mid < 0.10 or bet_mid > 0.90:
+                continue
+
+            # Bid pricing: sit 1¢ inside the bet side's mid
+            if side == "yes":
+                bid = min(98, max(1, int(mkt_y * 100) + 1))
+            else:
+                bid = max(2, int(mkt_n * 100) - 1)
+
+            # Cost per contract = bid cents (symmetric for YES/NO)
             cost_per = bid / 100.0
+            b = client.get_balance()
             target_risk = b * 0.05
             count = int(target_risk / cost_per)
+            count = min(count, 25)
             if count < 1:
                 continue
             try:
-                client.create_order(ticker=o["ticker"], side="yes", yes_price=bid, count=str(count))
-                print(f"  BUY YES {o['type']:5s} {o['player'][:25]:25s} {o.get('line_val', 0)}+ @ {bid}c x{count} "
-                      f"(model={o['model_prob']:.0%} mkt={o['market_prob']:.0%})", flush=True)
+                client.create_order(
+                    ticker=o["ticker"], side=side,
+                    yes_price=bid if side == "yes" else (100 - bid),
+                    count=str(count),
+                )
+                daily_pnl -= cost_per * count
+                print(f"  {direction:8s} {o['type']:5s} {o['player'][:25]:25s} "
+                      f"{o.get('line_val', 0)}+ @ {bid}c x{count} "
+                      f"(model={p_y:.0%} mkt_y={mkt_y:.0%} mkt_n={mkt_n:.0%} "
+                      f"edge={edge:+.1%} risk=${cost_per * count:.2f})", flush=True)
                 placed += 1
             except Exception as e:
                 print(f"  FAILED {o['player']}: {e}", flush=True)

@@ -19,3 +19,9 @@ pyarrow>=14.0.0
 cryptography>=41.0.0
 python-dateutil>=2.8.0
 pytz>=2023.0
+# Oracle API (bin/oracle_api.py) — FastAPI wrapper for the researcher agent's
+# tool-use pattern. NOTE: FastAPI 0.110+ requires pydantic v2. If your env
+# has cfbd installed (transitive dep that requires pydantic<2), pin
+# `fastapi<0.110` and `pydantic<2` instead.
+fastapi>=0.110
+uvicorn[standard]>=0.25

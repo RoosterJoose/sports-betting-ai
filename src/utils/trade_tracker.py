@@ -50,6 +50,10 @@ class TradeTracker:
             CREATE INDEX IF NOT EXISTS idx_trades_status
             ON trades(status)
         """)
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trades_timestamp
+            ON trades(timestamp)
+        """)
         self._conn.commit()
 
     def log_trade(self, sport: str, model_name: str, ticker: str, title: str,
@@ -173,6 +177,55 @@ class TradeTracker:
         ).reset_index()
         cal["brier"] = (cal["pred_prob"] - cal["actual_rate"]) ** 2
         return cal
+
+    def get_raw_pairs(self, sport: str = None, model_name: str = None) -> pd.DataFrame:
+        """Return raw (model_prob, outcome) pairs from resolved trades.
+
+        Unlike get_calibration() (which returns binned aggregates), this
+        returns the unbinned pairs needed for fitting a calibrator directly
+        (e.g. BetaCalibrator.fit(probs, labels)).
+
+        Note: ``model_prob`` stored at trade-log time is the scanner's
+        POST-calibration probability (i.e. after the existing BetaCal
+        applied). Fitting a new calibrator on these pairs is therefore a
+        *re-calibration on top of* the existing calibration, not a clean
+        raw-model refit. That is intentional: the new calibrator learns
+        to correct the residual miscalibration the old one left in live
+        production data.
+
+        Returns columns: ``model_prob`` (float), ``outcome`` (0.0 or 1.0).
+        """
+        where = ["status IN ('won','lost')"]
+        params = []
+        if sport:
+            where.append("sport=?")
+            params.append(sport)
+        if model_name:
+            where.append("model_name=?")
+            params.append(model_name)
+        q = f"""
+            SELECT model_prob, CASE WHEN status='won' THEN 1.0 ELSE 0.0 END as outcome
+            FROM trades
+            WHERE {' AND '.join(where)}
+        """
+        return pd.read_sql_query(q, self._conn, params=params)
+
+    def count_pairs(self, sport: str = None, model_name: str = None) -> int:
+        """Count resolved-trade pairs (same WHERE as get_raw_pairs).
+
+        Returns 0 if no rows match. Uses the same indexes as get_raw_pairs
+        (idx_trades_sport_model, idx_trades_status) so it's an index scan.
+        """
+        where = ["status IN ('won','lost')"]
+        params = []
+        if sport:
+            where.append("sport=?")
+            params.append(sport)
+        if model_name:
+            where.append("model_name=?")
+            params.append(model_name)
+        q = f"SELECT COUNT(*) FROM trades WHERE {' AND '.join(where)}"
+        return int(pd.read_sql_query(q, self._conn, params=params).iloc[0, 0])
 
     def summary(self, min_sample: int = 5) -> str:
         lines = []

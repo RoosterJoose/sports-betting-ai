@@ -1,0 +1,165 @@
+{
+  "timestamp": "2026-06-12_1004",
+  "mlb_tiers": {
+    "Light favorite (~50-55%)": {
+      "n": 1677,
+      "wins": 871,
+      "win_rate": 0.5193798449612403,
+      "implied_mid": 0.5,
+      "cal_err": 0.019379844961240345
+    },
+    "Moderate favorite (~55-65%)": {
+      "n": 4267,
+      "wins": 2432,
+      "win_rate": 0.5699554722287321,
+      "implied_mid": 0.6000000000000001,
+      "cal_err": -0.03004452777126798
+    },
+    "Strong favorite (~65-75%)": {
+      "n": 1161,
+      "wins": 735,
+      "win_rate": 0.6330749354005168,
+      "implied_mid": 0.7,
+      "cal_err": -0.06692506459948311
+    },
+    "Heavy favorite (~75%+)": {
+      "n": 52,
+      "wins": 31,
+      "win_rate": 0.5961538461538461,
+      "implied_mid": 0.88,
+      "cal_err": -0.28384615384615386
+    }
+  },
+  "wc_tiers": {
+    "Light favorite (~50-55%)": {
+      "n": 7,
+      "wins": 5,
+      "win_rate": 0.7142857142857143,
+      "implied_mid": 0.5,
+      "cal_err": 0.2142857142857143
+    },
+    "Moderate favorite (~55-65%)": {
+      "n": 6,
+      "wins": 4,
+      "win_rate": 0.6666666666666666,
+      "implied_mid": 0.6000000000000001,
+      "cal_err": 0.06666666666666654
+    },
+    "Strong favorite (~65-75%)": {
+      "n": 17,
+      "wins": 9,
+      "win_rate": 0.5294117647058824,
+      "implied_mid": 0.7,
+      "cal_err": -0.1705882352941176
+    },
+    "Heavy favorite (~75%+)": {
+      "n": 27,
+      "wins": 21,
+      "win_rate": 0.7777777777777778,
+      "implied_mid": 0.88,
+      "cal_err": -0.10222222222222221
+    }
+  },
+  "joint": {
+    "p_usa": 0.6000000000000001,
+    "p_brazil": 0.88,
+    "p_bal": 0.5699554722287321,
+    "p_cle": 0.5699554722287321,
+    "n_usa": 6,
+    "n_brazil": 27,
+    "n_bal": 4267,
+    "n_cle": 4267,
+    "p_joint": 0.17152039889079593,
+    "p_joint_avg": 0.17152039889079593,
+    "fair_price": 5.83021032172787,
+    "kalshi_rows": [
+      {
+        "offer": 0.1,
+        "dec_odds": 10.0,
+        "ev": 0.07152039889079592,
+        "roi_pct": 71.52039889079592,
+        "verdict": "\u2705 positive"
+      },
+      {
+        "offer": 0.12,
+        "dec_odds": 8.333333333333334,
+        "ev": 0.05152039889079593,
+        "roi_pct": 42.93366574232994,
+        "verdict": "\u2705 positive"
+      },
+      {
+        "offer": 0.15,
+        "dec_odds": 6.666666666666667,
+        "ev": 0.021520398890795933,
+        "roi_pct": 14.346932593863956,
+        "verdict": "\u2705 positive"
+      },
+      {
+        "offer": 0.175,
+        "dec_odds": 5.714285714285714,
+        "ev": -0.0034796011092040613,
+        "roi_pct": -1.9883434909737496,
+        "verdict": "\u26a0\ufe0f  marginal"
+      },
+      {
+        "offer": 0.2,
+        "dec_odds": 5.0,
+        "ev": -0.028479601109204083,
+        "roi_pct": -14.239800554602041,
+        "verdict": "\u274c negative"
+      },
+      {
+        "offer": 0.25,
+        "dec_odds": 4.0,
+        "ev": -0.07847960110920407,
+        "roi_pct": -31.39184044368163,
+        "verdict": "\u274c negative"
+      },
+      {
+        "offer": 0.3,
+        "dec_odds": 3.3333333333333335,
+        "ev": -0.12847960110920406,
+        "roi_pct": -42.82653370306802,
+        "verdict": "\u274c negative"
+      }
+    ]
+  },
+  "target_legs": [
+    {
+      "leg": 1,
+      "sport": "WC",
+      "team": "USA",
+      "match": "USA vs Paraguay",
+      "implied": 0.52,
+      "model": 0.613,
+      "research": "MODERATE"
+    },
+    {
+      "leg": 2,
+      "sport": "WC",
+      "team": "Brazil",
+      "match": "Brazil vs Morocco",
+      "implied": 0.73,
+      "model": 0.832,
+      "research": "STRONG"
+    },
+    {
+      "leg": 3,
+      "sport": "MLB",
+      "team": "BAL",
+      "match": "ATL @ BAL",
+      "implied": 0.58,
+      "model": null,
+      "research": "MODERATE (research)"
+    },
+    {
+      "leg": 4,
+      "sport": "MLB",
+      "team": "CLE",
+      "match": "CLE @ CIN",
+      "implied": 0.6,
+      "model": null,
+      "research": "STRONG"
+    }
+  ]
+}

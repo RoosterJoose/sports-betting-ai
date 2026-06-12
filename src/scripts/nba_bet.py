@@ -55,6 +55,13 @@ MARKETS = [
     ("PRA", "KXNBAPRA", "PRA", False),
 ]
 
+# Cap on per-trade edge. Empirical data (1,581 re-resolved NBA trades, Jun 8-10
+# 2026) shows win rate is INVERTED with edge: peak WR at 15-20% edge (24.5%),
+# then collapsing — 30-40% edge = 9.7% WR, 40%+ edge = 1.1% WR (87 trades, 86
+# lost). High edge = high model overconfidence, not high signal. Filtering here
+# is the single highest-ROI fix from the calibration investigation.
+MAX_EDGE = 0.20
+
 
 def _extract(title):
     """Extract player name and line value from Kalshi title."""
@@ -149,6 +156,8 @@ def get_nba_bets(kc=None, min_edge=0.05) -> list:
 
                 edge = p_yes - yes_mid
                 if edge < min_edge:
+                    continue
+                if edge > MAX_EDGE:
                     continue
                 if yes_mid < 0.10 or yes_mid > 0.80:
                     continue
@@ -258,6 +267,13 @@ def main():
     if skipped_injured:
         print(f"\nSkipped {skipped_injured} injured/OUT player markets")
 
+    # Apply edge cap (filter out overconfident model picks)
+    pre_cap = len(all_opps)
+    all_opps = [o for o in all_opps if o.get("edge", 0) <= MAX_EDGE]
+    filtered = pre_cap - len(all_opps)
+    if filtered:
+        print(f"\n  Edge cap @ {MAX_EDGE:.0%}: filtered {filtered} overconfident picks")
+
     print(f"\nTotal: {len(all_opps)}")
 
     if args.json:
@@ -278,6 +294,8 @@ def main():
         for o in all_opps:
             if placed >= 8: break
             if o["edge"] < 0.04 or o["market_prob"] < 0.01: continue
+            if o["edge"] > MAX_EDGE:  # defense in depth — should already be filtered upstream
+                continue
             bid = min(98, max(1, int(o["market_prob"]*100)+1))
             bal = client.get_balance()
             n = max(1, int(bal * 0.05 / (bid/100.0)))

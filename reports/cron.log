@@ -1,0 +1,38 @@
+Running morning scan... (Thu Jun 11 09:00:01 PDT 2026)
+  Output → /Users/bpj520/sports-betting-ai/reports/2026-06-11_0900.txt
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!! STALENESS CHECK FAILED — refusing to suggest bets with stale data
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!! NFL: latest game 2024-05-31 is 741d old
+  !!! NHL: latest game 2026-04-16 is 56d old
+  !!!
+  !!! Fix: refresh the stale sport's cache and retry.
+  !!! Override (DANGEROUS): STALENESS_OVERRIDE=1 python -m src.scripts.morning_scan --paper
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+================================================================================
+  REPORT SAVED → /Users/bpj520/sports-betting-ai/reports/2026-06-11_0900.txt  (    1053 bytes)
+  View via: cat /Users/bpj520/sports-betting-ai/reports/latest.txt
+  Exit code: 0
+================================================================================
+Running morning scan... (Fri Jun 12 09:00:00 PDT 2026)
+  Output → /Users/bpj520/sports-betting-ai/reports/2026-06-12_0900.txt
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!! STALENESS CHECK FAILED — refusing to suggest bets with stale data
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!! NFL: latest game 2024-05-31 is 742d old
+  !!! NHL: latest game 2026-04-16 is 57d old
+  !!!
+  !!! Fix: refresh the stale sport's cache and retry.
+  !!! Override (DANGEROUS): STALENESS_OVERRIDE=1 python -m src.scripts.morning_scan --paper
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+================================================================================
+  REPORT SAVED → /Users/bpj520/sports-betting-ai/reports/2026-06-12_0900.txt  (    1053 bytes)
+  View via: cat /Users/bpj520/sports-betting-ai/reports/latest.txt
+  Exit code: 0
+================================================================================

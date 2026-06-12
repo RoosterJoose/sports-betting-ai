@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook: THREE checks
+# Pre-commit hook: FOUR checks
 #  1. STALENESS: abort if any sport's player-game-logs parquet is older
 #     than 7 days while that sport is in season. Catches the bug where
 #     the model was used to suggest bets for a game whose data was never
@@ -7,7 +7,13 @@
 #  2. CODEGRAPH: verify codegraph sees all key symbols as having callers.
 #     Catches dynamic-import-in-try/except regressions (the one fixed in
 #     commit 3945c11 where 9 sport scanners were invisible to codegraph).
-#  3. FILE SIZE: abort if any staged file is >50MB. Catches the bug
+#  3. PREFLIGHT 14d CAP: runs src.utils.preflight.check_in_season_stale()
+#     to catch in-season sports whose parquet is 8-14d old (between the
+#     7d hard staleness gate and the 14d soft cap). Uses preflight's
+#     per-sport in_season_stale_days (NBA 30d, NHL 90d, NFL 90d) for the
+#     "in-season" determination but a UNIFORM 14d threshold for the
+#     actual commit-block decision.
+#  4. FILE SIZE: abort if any staged file is >50MB. Catches the bug
 #     where statcast parquet files (113MB, 110MB) blocked pushes because
 #     they exceed GitHub's 100MB limit. Filter-repo cleaned history;
 #     this guard prevents it from happening again.
@@ -22,7 +28,7 @@ set -e
 # Prefer the repo-local venv python (has pandas/numpy); fall back to
 # system python3 (will skip if deps missing).
 echo
-echo "  [1/3] staleness check (sport cache freshness)..."
+echo "  [1/4] staleness check (sport cache freshness)..."
 if [ -x ".venv/bin/python" ]; then
   PY=".venv/bin/python"
 elif command -v python3 &> /dev/null; then
@@ -53,7 +59,7 @@ SYMBOLS=(
 )
 
 echo
-echo "  [2/3] codegraph callers check..."
+echo "  [2/4] codegraph callers check..."
 if ! command -v codegraph &> /dev/null; then
   echo "  [codegraph] CLI not installed — skipping pre-commit check"
   echo "  (install with: npm i -g @codegraph/cli)"
@@ -94,13 +100,59 @@ fi
 
 echo "  [codegraph] $checked symbols all have callers ✓"
 
-# === CHECK 3: FILE SIZE =================================================
+# === CHECK 3: PREFLIGHT (per-sport 14d cap) =============================
+# Runs src.utils.preflight's check_in_season_stale() — a separate, wider
+# net than the [1/3] staleness check (which is a hard 7d gate). The
+# preflight check uses the per-sport in_season_stale_days threshold
+# (NBA 30d, NHL 90d, NFL 90d, CFB 90d, MLB 60d, WNBA 60d, UFC 60d) for
+# the "in-season" determination, but applies a UNIFORM 14d cap for the
+# "too stale to commit" decision. This catches the case where sport X is
+# in-season per its calendar window but the parquet is older than 14d
+# (e.g. NHL regular season ended but data hasn't been refreshed for the
+# playoff games yet — 7d staleness passes, 14d preflight catches it).
+#
+# Skip with: git commit --no-verify
+echo
+echo "  [3/4] preflight in-season 14d cap..."
+if [ -n "$PY" ]; then
+  failed_preflight=$("$PY" -c "
+import sys
+sys.path.insert(0, '.')
+from src.utils.preflight import check_in_season_stale
+fails = check_in_season_stale(threshold_days=14)
+if not fails:
+    print('  [preflight] all in-season sports <14d old ✓')
+    sys.exit(0)
+print('  [preflight] FAIL: in-season sport(s) STALE > 14d:')
+for f in fails:
+    if f["latest_date"]:
+        # Parquet-based sport: show the last game date
+        print(f'    !! {f["sport"]:5s}: data stale {f["age_days"]}d (last game {f["latest_date"]})')
+    elif f["mtime"]:
+        # UFC: show the fighter_augment.json mtime
+        print(f'    !! {f["sport"]:5s}: fighter_augment.json stale {f["age_days"]}d (mtime {f["mtime"]})')
+    else:
+        # Fallback (shouldn't happen in practice)
+        print(f'    !! {f["sport"]:5s}: stale {f["age_days"]}d')
+sys.exit(1)
+" 2>&1)
+  rc=$?
+  echo "$failed_preflight"
+  if [ $rc -ne 0 ]; then
+    echo
+    echo "  PREFLIGHT 14D CAP FAILED — refusing to commit"
+    echo "  Tip: refresh the stale sport's cache, or use --no-verify to skip"
+    exit 1
+  fi
+fi
+
+# === CHECK 4: FILE SIZE ================================================
 # Abort if any staged file is >50MB. Catches the bug where statcast
 # parquet files (113MB, 110MB) blocked pushes because they exceed
 # GitHub's 100MB limit. Filter-repo cleaned history; this guard
 # prevents it from happening again. Use --no-verify to skip.
 echo
-echo "  [3/3] staged file size check (limit 50MB)..."
+echo "  [4/4] staged file size check (limit 50MB)..."
 
 MAX_BYTES=$((50 * 1024 * 1024))
 oversized=()

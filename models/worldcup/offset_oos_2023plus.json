@@ -3,23 +3,23 @@
   "n_neutral": 87,
   "n_non_neutral": 2606,
   "offset_used": {
-    "delta_home": -0.11187694259084136,
-    "delta_draw": 0.052611178520724555,
-    "delta_away": 0.05926576407011694,
+    "delta_home": -0.0655065179578134,
+    "delta_draw": 0.019905175533453716,
+    "delta_away": 0.04560134242435948,
     "cap": 0.15
   },
   "full": {
     "brier_raw": 0.27467898339438046,
-    "brier_offset": 0.27462071970184526,
+    "brier_offset": 0.2745331809914272,
     "acc_raw": 0.7979948013367991,
-    "acc_offset": 0.7983661344225771
+    "acc_offset": 0.7979948013367991
   },
   "neutral_subset": {
     "brier_raw": 0.26813543988317273,
-    "brier_offset": 0.26633194420504375,
+    "brier_offset": 0.2636222689503794,
     "acc_raw": 0.7931034482758621,
-    "acc_offset": 0.8045977011494253,
-    "brier_delta": -0.0018034956781289857,
+    "acc_offset": 0.7931034482758621,
+    "brier_delta": -0.004513170932793353,
     "verdict": "generalizes"
   },
   "non_neutral_subset": {

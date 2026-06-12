@@ -137,6 +137,14 @@ class BetaCalibrator:
     Reference: Kull et al. (2017) "Beyond sigmoids"
     """
 
+    # Calibrators with p_cal < CRUSHING_RATIO_THRESHOLD * p_raw at any of
+    # the test points are flagged as "crushing" (the rbi_beta_cal bug class:
+    # |a|,|b|,|c| all < 3 but p_raw=0.9 maps to p_cal < 0.45). RuntimeWarning
+    # is raised during fit(); CI can promote it to error via
+    # `warnings.filterwarnings("error", category=RuntimeWarning)`.
+    CRUSHING_RATIO_THRESHOLD = 0.5
+    _CRUSHING_TEST_POINTS = (0.7, 0.9, 0.95)
+
     def __init__(self):
         self.a = 1.0
         self.b = 1.0
@@ -154,6 +162,22 @@ class BetaCalibrator:
         self.b = -float(lr.coef_[0, 1])  # sign flip for -b*log(1-p) formulation
         self.c = float(lr.intercept_[0])
         self._fitted = True
+        # Catch "moderate a/b/c but still crushing" cals (rbi bug class).
+        # Scale-relative: doesn't false-positive on a legitimately conservative
+        # cal that shifts everything down by 10%.
+        for p_test in self._CRUSHING_TEST_POINTS:
+            p_cal = float(self(p_test))
+            if p_cal < self.CRUSHING_RATIO_THRESHOLD * p_test:
+                ratio = p_cal / p_test
+                warnings.warn(
+                    f"BetaCal fitted but CRUSHING: p_raw={p_test:.2f} -> "
+                    f"p_cal={p_cal:.4f} (ratio={ratio:.2f}, "
+                    f"threshold={self.CRUSHING_RATIO_THRESHOLD}). "
+                    f"a={self.a:.3f} b={self.b:.3f} c={self.c:.3f}. "
+                    f"Consider identity cal (a=1, b=1, c=0) as fallback.",
+                    RuntimeWarning,
+                )
+                break
 
     def calibrate(self, probs: np.ndarray) -> np.ndarray:
         """Calibrate probability array using the fitted Beta model."""

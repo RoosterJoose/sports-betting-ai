@@ -19,7 +19,23 @@ mkdir -p "${LOG_DIR}"
     echo "============================================"
 
     cd "${PROJECT_DIR}"
+
+    echo ""
+    echo "  Pre-flight: per-sport data + model + cal freshness"
+    if ! "${PYTHON}" -m src.utils.preflight 2>&1; then
+        echo "  [preflight] CRASHED — see trace above"
+    fi
+
+    echo ""
     "${PYTHON}" -m src.scripts.morning_scan --paper
+
+    echo ""
+    echo "── Live calibration refit (every ${REFIT_INTERVAL_DAYS:-7} days) ───"
+    if [ -x "${PROJECT_DIR}/bin/refit_calibrations.sh" ]; then
+        "${PROJECT_DIR}/bin/refit_calibrations.sh" || true
+    else
+        echo "  (refit_calibrations.sh not executable, skipping)"
+    fi
 
     echo ""
     echo "  Done at $(date '+%H:%M:%S')"

@@ -20,6 +20,10 @@ warnings.filterwarnings("ignore")
 from src.data.kalshi import KalshiClient
 from src.data.ufc import UFCDataSource
 from src.features.ufc import build_ufc_features, FEATURE_COLS, WEIGHT_CLASS_FINISH_PCT, STAT_INFO
+from src.models.ufc_prop_probabilities import (
+    load_mov_calibration,
+    prop_bet_model_probabilities,
+)
 
 MODEL_DIR = Path("models/ufc")
 
@@ -191,6 +195,82 @@ def parse_combo_title(title: str) -> list[str]:
         return [vs_match.group(1).strip(), vs_match.group(2).strip()]
 
     return []
+
+
+def _print_mov_predictions(
+    model, features, cal, fighter_db, wc_avg,
+    matchups: dict | None = None,
+) -> None:
+    """Print calibrated method-of-victory + round-of-finish predictions
+    for all known upcoming matchups (defaults to UPCOMING_MATCHUPS).
+
+    Surfaced alongside the moneyline picks so a user can see at a glance
+    e.g. "Topuria has a 28% chance of winning by KO, Gaethje 22%" without
+    running a separate `--model-only` pass. Each fight is shown once
+    (deduplicated across the 2-corner entry in the matchups dict).
+
+    If no calibration is loaded (mov_calibration.json missing), probs
+    are still shown but flagged as uncalibrated.
+    """
+    if matchups is None:
+        matchups = UPCOMING_MATCHUPS
+    mov_cal_loaded = bool(load_mov_calibration())
+    cal_tag = "calibrated" if mov_cal_loaded else "uncalibrated (run train_ufc_mov_cal.py)"
+    print(f"\n  ╔══ Method-of-Victory predictions ({cal_tag}) ══╗")
+    # Deduplicate: each fight has 2 entries in UPCOMING_MATCHUPS (one per corner)
+    seen_pairs: set[tuple[str, str]] = set()
+    n_shown = 0
+    for fighter_lower, (opp, wc, rounds) in matchups.items():
+        if not opp:
+            continue
+        pair = tuple(sorted([fighter_lower.lower(), opp.lower()]))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        f1_stats, _ = get_fighter_stats(fighter_lower, fighter_db, wc_avg)
+        f2_stats, _ = get_fighter_stats(opp, fighter_db, wc_avg)
+        # Gracefully handle missing model/features (e.g., test paths) — use
+        # 50/50 prior so MoV probs still print from the fighter stats alone.
+        if model is None or features is None:
+            p_red = 0.5
+        else:
+            p_red = _predict_winner_direct(f1_stats, f2_stats, wc, rounds, model, features, cal)
+        probs = prop_bet_model_probabilities(
+            p_red_wins=p_red,
+            red_name=fighter_lower,
+            blue_name=opp,
+            weight_class=wc,
+            scheduled_rounds=rounds,
+            fighter_db=fighter_db,
+            wc_avg=wc_avg,
+        )
+        # Pretty-print one line per outcome
+        print(
+            f"  ║ {probs['fight']:32s} ({wc}, {rounds}r)  "
+            f"P(red)={probs['p_red_wins']:.0%}"
+        )
+        print(
+            f"  ║   {fighter_lower:18s} →  "
+            f"KO={probs['p_red_ko']:.0%}  Sub={probs['p_red_sub']:.0%}  "
+            f"Dec={probs['p_red_dec']:.0%}"
+        )
+        print(
+            f"  ║   {opp:18s} →  "
+            f"KO={probs['p_blue_ko']:.0%}  Sub={probs['p_blue_sub']:.0%}  "
+            f"Dec={probs['p_blue_dec']:.0%}"
+        )
+        print(
+            f"  ║   Round:  "
+            f"R1={probs['p_round_1']:.0%}  R2={probs['p_round_2']:.0%}  "
+            f"R3={probs['p_round_3']:.0%}"
+            + (f"  R4={probs['p_round_4']:.0%}  R5={probs['p_round_5']:.0%}"
+               if rounds >= 5 else "")
+            + f"  Dist={probs['p_goes_distance']:.0%}"
+        )
+        n_shown += 1
+    if n_shown == 0:
+        print("  ║   (no known matchups to predict)")
+    print(f"  ╚{'═' * 70}╝")
 
 
 def get_opponent(fighter_name: str) -> tuple:
@@ -385,6 +465,11 @@ def scan():
 
             indv_probs[fn] = prob
             indv_in_db[fn] = in_db
+            # Explicit per-fighter logging (debug Hokit/Lewis labeling question)
+            if opp:
+                print(f"    [leg] P({fn} beats {opp}) = {prob:.1%}  ({wc}, {rounds}r)")
+            else:
+                print(f"    [leg] P({fn} wins) = {prob:.1%}  ({wc}, {rounds}r, generic opp)")
 
         # Joint probability: product of individual win probabilities (independence)
         joint_prob = 1.0
@@ -442,6 +527,11 @@ def scan():
             print(f"  {r['num_legs']:5d} {f_str:60s} "
                   f"{r['p_model']:.0%}  {r['market_prob']:.0%}  "
                   f"{r['edge']:+.0%}  {r['price_cents']}¢")
+
+    # Surface calibrated method-of-victory + round predictions for the
+    # full upcoming card. Helps the user sanity-check the moneyline picks
+    # by seeing where the model thinks each fight ends (e.g. KO vs dec).
+    _print_mov_predictions(model, features, cal, fighter_db, wc_avg)
 
     print()
     portfolio = kc._request("GET", "/portfolio/orders", params={"limit": 50}).get("orders", [])

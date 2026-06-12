@@ -49,6 +49,20 @@ FEE_ZONE_LOW = 0.40
 FEE_ZONE_HIGH = 0.60
 FEE_ZONE_MIN_EDGE = 0.075  # 7.5% edge required in 40-60c range (vs 5% elsewhere)
 
+# Liquidity-aware price gate (relaxed 2026-06-11)
+# Core range 0.15 < mkt < 0.75 — the original gate, where all markets are
+# assumed to have meaningful liquidity. This covers ~60% of Kalshi markets.
+# Extended range 0.05 <= mkt <= 0.95 — previously blocked, now allowed
+# only if the side we'd lift has >= MIN_LIQUIDITY_CONTRACTS contracts of
+# resting depth. Per the 2026-06-11 diagnostic:
+#   - 0-10c YES markets have median ask_size=500 (deep), 30% have bid_size>=10
+#   - 90-100c NO markets have median ask_size=0 (thin), only 12% have ask_size>=10
+# So the extended range unlocks the deep 0-10c YES asks while still filtering
+# out the thin 90-100c NO asks.
+MIN_LIQUIDITY_CONTRACTS = 10
+EXTENDED_GATE_LOW = 0.05
+EXTENDED_GATE_HIGH = 0.95
+
 # Module-level calibration singletons
 _calibrator: EmpiricalCalibrator | None = None
 _beta_calibrators: dict[str, BetaCalibrator] = {}
@@ -61,6 +75,12 @@ ISOTONIC_PREFERRED: set[str] = {"ip", "r", "rbi", "sb", "hr", "blk", "stl"}
 
 
 def _get_cal():
+    # NOTE (2026-06-11): Empirical cal files were moved to
+    # models/mlb/calibration/.empirical_backup/ because they were crushing
+    # model_prob to 2-17% on markets priced at 56-99%. Beta cals are now
+    # the active path. The EmpiricalCalibrator returns None if no
+    # *_empirical.json files exist in CALIB_DIR, so this function is a
+    # no-op until the empirical cals are rebuilt from fresh 2026 data.
     global _calibrator
     if _calibrator is None and CALIB_DIR.exists():
         _calibrator = EmpiricalCalibrator(CALIB_DIR)
@@ -68,25 +88,39 @@ def _get_cal():
 
 
 def _get_beta_cal(stat_name: str) -> BetaCalibrator | None:
-    """Load per-stat BetaCalibrator from calibration dir (cached)."""
+    """Load per-stat BetaCalibrator from MODEL_DIR (cached).
+
+    Per-stat BetaCal files live at ``models/mlb/{stat}_beta_cal.json``
+    (root, NOT in the ``calibration/`` subdir — that's reserved for the
+    empirical calibrator which IS read via CALIB_DIR above). This was
+    a pre-existing path mismatch where the scanner read from
+    ``calibration/`` but the writers (refit_mlb_beta_cal_live.py and
+    fit_pa_k_calibration.py) write to MODEL_DIR root, so all beta cals
+    were silently ignored and the scanner fell through to Wang.
+    """
     key = stat_name.lower()
     if key in _beta_calibrators:
         bc = _beta_calibrators[key]
         return bc if bc._fitted else None
-    path = CALIB_DIR / f"{key}_beta_cal.json"
+    path = MODEL_DIR / f"{key}_beta_cal.json"
     bc = BetaCalibrator.load(path)
     _beta_calibrators[key] = bc
     return bc if bc._fitted else None
 
 
 def _get_isotonic_cal(stat_name: str):
-    """Load per-stat IsotonicCalibrator from calibration dir (cached)."""
+    """Load per-stat IsotonicCalibrator from MODEL_DIR (cached).
+
+    Same path fix as _get_beta_cal — reads from MODEL_DIR root where
+    the isotonic cal files actually live. The ``calibration/`` subdir
+    is only used for the empirical calibrator.
+    """
     from src.models.calibrator import IsotonicCalibrator
     key = stat_name.lower()
     if key in _isotonic_calibrators:
         ic = _isotonic_calibrators[key]
         return ic if ic._fitted else None
-    path = CALIB_DIR / f"{key}_isotonic_cal.json"
+    path = MODEL_DIR / f"{key}_isotonic_cal.json"
     ic = IsotonicCalibrator.load(path)
     _isotonic_calibrators[key] = ic
     return ic if ic._fitted else None
@@ -605,13 +639,18 @@ def main():
         if not bet_opps:
             print("\n  No non-info_only opportunities to bet on.")
         else:
-            print(f"\n--- PLACING YES ORDERS ({len(bet_opps)} candidates after info_only filter) ---")
+            # Per 2026-06-11 diagnostic: NO-side opportunities (model < market
+            # by 5%+) outnumber YES-side ~2.7x. Sort by max(|yes_edge|, |no_edge|)
+            # so we surface the most aggressive opportunities first. Cap raised
+            # 6→12: per-bet dollar cap is the real risk control, count cap is
+            # just a sanity backstop.
+            bet_opps.sort(key=lambda o: max(abs(o.get("yes_edge", 0)), abs(o.get("no_edge", 0))), reverse=True)
+            print(f"\n--- PLACING ORDERS ({len(bet_opps)} candidates after info_only filter) ---")
             placed = 0
             daily_pnl = 0.0
-            ks_ticker = "KXMLBKS"
             for o in bet_opps:
-                if placed >= 6:
-                    break
+                if placed >= 12:  # Raised 2026-06-11: 692 NO opportunities vs 260 YES;
+                    break         # per-bet dollar cap is the real risk control.
                 # Skip info-only markets (ALL models failed backtest)
                 if o.get("info_only", False):
                     continue
@@ -627,31 +666,85 @@ def main():
                 no_edge = o["no_edge"]
                 mkt_y = o["mkt_yes"]
                 p_y = o["p_yes"]
+                no_mid = 1.0 - mkt_y
 
-                # Phase 4: Apply fee-zone edge boost (40-60c requires 7.5%)
-                if FEE_ZONE_LOW <= mkt_y <= FEE_ZONE_HIGH:
-                    required_edge = FEE_ZONE_MIN_EDGE
+                # ── Pick the side with the larger edge (NO wins ~2.7x more often) ──
+                # `lift_size` is the resting depth on the side we'd be lifting
+                # to fill this bet. For YES, that's the YES ask; for NO, that's
+                # the NO ask (which equals 100 - YES bid). Read from the
+                # market row's *_size_fp fields (V2 API fixed-point strings).
+                if no_edge > yes_edge:
+                    side = "no"
+                    direction = "BUY NO"
+                    bet_mid = no_mid      # relevant mid for the bet side
+                    edge = no_edge
+                    # NO ask liquidity ≈ contracts resting at the YES bid
+                    try:
+                        lift_size = float(m.get("yes_bid_size_fp") or 0)
+                    except (TypeError, ValueError):
+                        lift_size = 0
                 else:
-                    required_edge = 0.05
-                if yes_edge > required_edge and 0.15 < mkt_y < 0.75:
-                    bid = min(98, int(mkt_y * 100) + 1)
                     side = "yes"
                     direction = "BUY YES"
+                    bet_mid = mkt_y
+                    edge = yes_edge
+                    # YES ask liquidity = contracts resting at the YES ask
+                    try:
+                        lift_size = float(m.get("yes_ask_size_fp") or 0)
+                    except (TypeError, ValueError):
+                        lift_size = 0
+
+                # ── Fee-zone edge boost (40-60c on the BET side's mid) ────────
+                if FEE_ZONE_LOW <= bet_mid <= FEE_ZONE_HIGH:
+                    required_edge = FEE_ZONE_MIN_EDGE  # 7.5%
                 else:
+                    required_edge = 0.05                # 5%
+
+                # ── Liquidity-aware price gate (relaxed 2026-06-11) ───────────
+                # Core range: any market in 0.15 < bet_mid < 0.75 (was the old gate).
+                # Extended range: 0.05 <= bet_mid <= 0.95 ONLY if the side we'd
+                # lift has >= MIN_LIQUIDITY_CONTRACTS contracts of resting depth.
+                in_core = 0.15 < bet_mid < 0.75
+                in_extended = (EXTENDED_GATE_LOW <= bet_mid <= EXTENDED_GATE_HIGH
+                               and lift_size >= MIN_LIQUIDITY_CONTRACTS)
+                if not (in_core or in_extended):
+                    continue
+                if edge <= required_edge:
                     continue
 
+                # ── Compute bid: sit just inside the side's mid ───────────────
+                if side == "yes":
+                    # YES bid: 1¢ above YES mid, capped at 98¢
+                    bid = min(98, int(mkt_y * 100) + 1)
+                else:
+                    # NO bid: 1¢ below NO mid, floored at 2¢
+                    bid = max(2, int(no_mid * 100) - 1)
+
+                # ── Cost: pay `bid` cents per contract regardless of side ────
+                # FIX (2026-06-11): prior code used (100-bid)/100 for NO, which
+                # is the *profit if NO wins*, not the cost. The cost is bid/100
+                # for both sides — buying YES at 80¢ costs 80¢/contract, same as
+                # buying NO at 80¢.
+                cost_per = bid / 100.0
                 b = client.get_balance()
-                cost_per = ((100 - bid) / 100) if side == "no" else (bid / 100)
                 target_risk = b * 0.05
                 count = int(target_risk / cost_per)
+                # Liquidity cap: at bid=10¢ a 5%-of-bankroll bet = 50 contracts,
+                # which is unlikely to fill fully on a thin book. Cap at 25.
+                count = min(count, 25)
                 if count < 1:
-                    print(f"  SKIP {o['player']}: can't risk <5% (1 contract = ${cost_per:.2f} > ${target_risk:.2f} limit)")
+                    print(f"  SKIP {o['player']}: can't risk <5% "
+                          f"(1 contract = ${cost_per:.2f} > ${target_risk:.2f} limit)")
                     continue
                 try:
-                    client.create_order(ticker=o["ticker"], side=side, yes_price=bid, count=str(count))
+                    client.create_order(ticker=o["ticker"], side=side,
+                                        yes_price=bid if side == "yes" else (100 - bid),
+                                        count=str(count))
                     daily_pnl -= cost_per * count
-                    print(f"  {direction:8s} {o['type']:4s} {o['player'][:25]:25s} {o['stat'][:15]:15s} {o['line']}+ @ {bid}¢ x{count} "
-                          f"(model={p_y:.0%} mkt={mkt_y:.0%} risk=${cost_per*count:.2f})", flush=True)
+                    print(f"  {direction:8s} {o['type']:4s} {o['player'][:25]:25s} "
+                          f"{o['stat'][:15]:15s} {o['line']}+ @ {bid}¢ x{count} "
+                          f"(model={p_y:.0%} mkt_y={mkt_y:.0%} mkt_n={no_mid:.0%} "
+                          f"edge={edge:+.1%} risk=${cost_per*count:.2f})", flush=True)
                     placed += 1
                 except Exception as e:
                     print(f"  FAILED {o['player']}: {e}", flush=True)

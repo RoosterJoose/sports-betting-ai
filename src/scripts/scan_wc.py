@@ -11,7 +11,7 @@ from src.data.world_cup import (fetch_all_matches, compute_elo, get_elo_for_team
                                   get_known_elo_teams, WC2026_TEAMS, CONF_MAP, CONF_ELO,
                                   build_feature_vector)
 from src.data.fotmob import (LineupCache, FotMobScraper, compute_key_player_out,
-                              map_kalshi_to_fotmob_id)
+                              map_kalshi_to_fotmob_id, load_star_players)
 from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -243,7 +243,8 @@ def _build_form_features(elo_df, elo_ratings):
 
 
 def predict_match(home_team, away_team, elo_ratings, form_features=None,
-                  ticker: str = None, lineups: dict = None):
+                  ticker: str = None, lineups: dict = None,
+                  star_impact_pp: float = 0.05):
     """Predict match outcome using trained ML model, falling back to Elo formula.
     Returns array of [p_home, p_draw, p_away].
 
@@ -260,6 +261,20 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None,
         key_player_out via the LineupCache (or a FotMob scrape on miss).
     lineups : dict, optional
         Pre-fetched lineups {"home": [...], "away": [...]}. Overrides ticker.
+    star_impact_pp : float, default 0.05
+        Per-match post-hoc adjustment when a star is missing (Q2d fix).
+        Subtracts this fraction from the missing-star team's win prob and
+        redistributes to the other two outcomes proportional to their weight.
+        Set to 0 to disable.
+
+    Notes
+    -----
+    Post-hoc chain at prediction time (June 10):
+      1. Model raw probs (3-class LGBM)
+      2. Neutral-venue empirical offset (per NotebookLM rec)
+      3. **Star-player post-hoc impact** — if a star is missing, apply
+         -star_impact_pp to that team's win prob. Bridges the gap until
+         enough lineup data accumulates to retrain with the feature.
     """
     elo_h = elo_ratings.get(home_team, CONF_ELO.get(CONF_MAP.get(home_team, ""), 1500))
     elo_a = elo_ratings.get(away_team, CONF_ELO.get(CONF_MAP.get(away_team, ""), 1500))
@@ -309,24 +324,93 @@ def predict_match(home_team, away_team, elo_ratings, form_features=None,
                 probs = np.maximum(probs, 0.001)
                 probs = probs / probs.sum()
 
+            # === Star-player post-hoc impact (per NotebookLM Q2d) ===
+            # When key_player_out=1, apply -star_impact_pp to the missing-star
+            # team's win prob. Redistribute to the other two outcomes
+            # proportional to their existing weights. Renormalize.
+            if key_player_out == 1 and star_impact_pp > 0:
+                probs = _apply_star_impact(
+                    probs, home_team, away_team, lineups,
+                    star_impact_pp=star_impact_pp,
+                )
+
             # Renormalize to sum to 1
             probs = probs / probs.sum()
             return probs
         except Exception:
             pass  # Fall through to Elo formula
-    
+
     # Fallback: Elo-based formula
     eh = elo_expected(elo_h, elo_a)
     ea = 1.0 - eh
-    
+
     diff = abs(elo_h - elo_a)
     draw_prob = max(0.12, 0.28 - diff * 0.0004)
-    
+
     p_draw = draw_prob
     p_home = eh * (1 - draw_prob)
     p_away = ea * (1 - draw_prob)
-    
+
     return np.array([p_home, p_draw, p_away])
+
+
+def _identify_missing_star_team(home_team: str, away_team: str, lineups: dict) -> Optional[str]:
+    """Return "home" / "away" / None — which team is missing a star player.
+
+    Reuses load_star_players() + the same contains-substring match as
+    compute_key_player_out, but exposes WHICH team is missing rather than
+    just a binary flag.
+    """
+    if not lineups:
+        return None
+    stars = load_star_players()
+    if not stars:
+        return None
+
+    for team, key in [(home_team, "home"), (away_team, "away")]:
+        team_stars = stars.get(team, [])
+        if not team_stars:
+            continue
+        xi_names = [p.get("name", "") for p in lineups.get(key, [])]
+        xi_lower = [n.lower() for n in xi_names]
+        for star in team_stars:
+            star_lower = star.lower()
+            if not any(star_lower in n for n in xi_lower):
+                return key  # Found a star missing from this team
+    return None
+
+
+def _apply_star_impact(probs: np.ndarray, home_team: str, away_team: str,
+                       lineups: dict, star_impact_pp: float = 0.05) -> np.ndarray:
+    """Apply post-hoc -star_impact_pp to the team missing a star player.
+
+    Subtracts `star_impact_pp` from that team's win prob, redistributes
+    the mass to the other two outcomes proportional to their existing
+    weights, then renormalizes to sum to 1.
+
+    probs: np.array([p_home, p_draw, p_away])
+    Returns: updated probs (sums to 1)
+    """
+    side = _identify_missing_star_team(
+        _full_name_to_code(home_team),
+        _full_name_to_code(away_team),
+        lineups,
+    )
+    if side is None:
+        return probs
+
+    side_idx = {"home": 0, "away": 2}[side]
+    other_idx = [i for i in range(3) if i != side_idx]
+    other_sum = probs[other_idx[0]] + probs[other_idx[1]]
+    if other_sum < 1e-6:
+        return probs  # Degenerate — no other mass to redistribute to
+
+    new_probs = probs.copy()
+    new_probs[side_idx] = max(0.0, probs[side_idx] - star_impact_pp)
+    for i in other_idx:
+        new_probs[i] = probs[i] + star_impact_pp * (probs[i] / other_sum)
+    new_probs = np.maximum(new_probs, 0.001)
+    return new_probs / new_probs.sum()
 
 
 MONTHS = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,"JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
@@ -504,6 +588,20 @@ def scan(args=None):
 
                 yb = m[f"{label}_yb"]
                 ya = m[f"{label}_ya"]
+
+                # === Phantom-edge filter (per PROJECT.md gap #1) ===
+                # Skip picks where the model is wildly overconfident on a
+                # longshot (model_p > 3x fair_p AND fair_p < 10%). These
+                # are "model says 50% on a 5% longshot" picks (e.g. Iraq
+                # 53.7% vs Norway 5.5% market = +862% edge) where the market
+                # is almost certainly right and the model's calibration is
+                # broken for longshots. Logging so we can audit later.
+                if model_p > 3.0 * fair_p and fair_p < 0.10:
+                    print(f"  [PHANTOM-FILTERED] {home} vs {away} — {outcomes[idx]}: "
+                          f"model={model_p:.1%} fair={fair_p:.1%} "
+                          f"edge={edge_pct:+.0f}% (model {model_p/fair_p:.1f}x fair, "
+                          f"longshot regime)")
+                    continue
 
                 cost = float(ya)
                 cnt = int(balance * 0.01 / cost) if cost > 0 else 0

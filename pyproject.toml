@@ -32,6 +32,12 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+# Registered test markers — add new ones here to silence PytestUnknownMarkWarning.
+# `live` is used by integration tests that hit external APIs (MLB Stats,
+# The Odds API, FotMob). Run with `pytest --runlive tests/...`.
+markers = [
+    "live: live integration test that requires network + --runlive flag",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",

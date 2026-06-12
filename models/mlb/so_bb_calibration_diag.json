@@ -1,0 +1,11 @@
+{
+  "stat": "SO+BB",
+  "n_test": 6043,
+  "n_calibration_samples": 23820,
+  "residual_std": 0.882,
+  "before_bias": 0.0899,
+  "after_bias": -0.0001,
+  "a": 0.561627583877817,
+  "b": 0.9392232879478472,
+  "c": -0.989528232890488
+}

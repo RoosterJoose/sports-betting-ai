@@ -44,6 +44,8 @@ STAT_TYPES = [
     ("BB", "BB"),
     ("SB", "SB"),
     ("R", "R"),
+    ("ER", "ER"),         # added 2026-06-11 — was falling through to Wang
+    ("IP", "IP"),         # added 2026-06-11 — was falling through to Wang
     ("2B", "2B"),
     ("1B", "1B"),
     ("3B", "3B"),
@@ -195,8 +197,13 @@ def fit_calibration(stat_name: str, model_display: str, featured: pd.DataFrame):
     # Canonical name for cal/diag file outputs (always lowercase + underscores)
     mn = stat_name.lower().replace("+", "_")
 
-    # Get raw stat column name
-    raw_col = mn  # e.g., H -> h, H+BB -> h_bb
+    # Get raw stat column name. Combo stats live in the dataframe as
+    # 'h+r+rbi', 'h+bb', 'so+bb' (with plus signs, see the feature
+    # engineering above), so we keep the `+` for column lookup while
+    # using `mn` (with underscores) for the file path. This was a bug
+    # prior to 2026-06-11 — H+R+RBI was silently skipped because
+    # `raw_col = mn = "h_r_rbi"` didn't match the actual column.
+    raw_col = stat_name.lower()
     if raw_col not in featured.columns:
         print(f"  {stat_name}: column '{raw_col}' not found in features")
         return
@@ -242,8 +249,11 @@ def fit_calibration(stat_name: str, model_display: str, featured: pd.DataFrame):
         print(f"  {stat_name}: y_mean={y_mean}, skipping")
         return
 
-    # For count stats: line range from 0 to ceil(y_mean * 2.5)
-    max_line = max(1, int(np.ceil(y_mean * 2.5)))
+    # For count stats: line range from 0 to ceil(y_mean * 3.5).
+    # The legacy y_mean * 2.5 under-shoots Kalshi market lines for
+    # combo stats like H+R+RBI where the typical market line is 3-7
+    # but y_mean is only ~2.5. Bumped 2026-06-11.
+    max_line = max(1, int(np.ceil(y_mean * 3.5)))
     min_line = 0
     if max_line <= min_line:
         max_line = min_line + 2

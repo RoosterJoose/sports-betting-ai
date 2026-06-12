@@ -22,7 +22,7 @@ class WNBADataSource(DataSource):
     def fetch_schedule(self, season: str) -> pd.DataFrame:
         return pd.DataFrame()
 
-    def fetch_player_game_logs(self, seasons: list[str]) -> pd.DataFrame:
+    def fetch_player_game_logs(self, seasons: list[str] = None) -> pd.DataFrame:
         cache_path = CACHE_DIR / "wnba_games.parquet"
         if cache_path.exists():
             df = pd.read_parquet(cache_path)

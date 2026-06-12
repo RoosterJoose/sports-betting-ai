@@ -402,6 +402,46 @@ def morning_scan(bankroll=None, auto_bet=False, min_edge=0.05):
     print("  " + "-" * 66)
     _pre_step_populate_wc_lineups(verbose=True)
 
+    # === 2.6. Research Oracle (pre-step: generate dated MLB slate file) ===
+    # Writes `data/oracle/YYYY-MM-DD.md` with the day's full MLB slate
+    # (matchups, probable pitchers, model moneyline, consensus odds from
+    # The Odds API). When dispatching a `researcher-web` pass to validate
+    # picks for this date, **inline this file** as the schedule + odds
+    # source. The public web has no 2026 game data; without this file
+    # the researcher returns "schedule doesn't exist."
+    print()
+    print("  " + "-" * 66)
+    print("  2.6. RESEARCH ORACLE (generate dated MLB slate for researcher-web)")
+    print("  " + "-" * 66)
+    try:
+        oracle_date = datetime.now().strftime("%Y-%m-%d")
+        oracle_bin = PROJECT_ROOT / "bin" / "research_oracle.py"
+        if oracle_bin.exists():
+            cmd_oracle = [sys.executable, str(oracle_bin), "--date", oracle_date]
+            oracle_result = subprocess.run(
+                cmd_oracle, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60,
+            )
+            oracle_path = PROJECT_ROOT / "data" / "oracle" / f"{oracle_date}.md"
+            for line in oracle_result.stdout.splitlines():
+                if any(k in line for k in ("Wrote", "→ ", "→", "ERROR", "WARNING", "⚠")):
+                    print(f"    {line}")
+            if oracle_result.returncode != 0:
+                tail = "\n".join(oracle_result.stderr.splitlines()[-3:]) if oracle_result.stderr else ""
+                print(f"  [oracle] non-zero exit ({oracle_result.returncode}) — continuing")
+                if tail:
+                    print(f"    stderr: {tail}")
+            if oracle_path.exists():
+                print(f"  [oracle] ✅ ground truth at: {oracle_path.relative_to(PROJECT_ROOT)}")
+                print(f"           Pass this file to the next researcher-web dispatch as context.")
+            else:
+                print(f"  [oracle] ⚠️  file not found at expected path: {oracle_path}")
+        else:
+            print(f"  [oracle] bin/research_oracle.py not found — skipping")
+    except subprocess.TimeoutExpired:
+        print(f"  [oracle] timed out after 60s — continuing (file may be stale)")
+    except Exception as e:
+        print(f"  [oracle] error: {e} — continuing")
+
     # === 3. World Cup 2026 ===
     print()
     print("  " + "-" * 66)

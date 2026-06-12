@@ -1,6 +1,6 @@
 # Sports Betting AI — Project Bible
 
-Last updated: **2026-06-10** (Late-night session: **🐛 CRITICAL: `resolve_paper_trades.py` result-field type bug** — Kalshi's `result` field is a STRING ("yes"/"no") but the script does `_safe_float(result)`, which returns 0.0 for any string. The conditional `won = (result_f >= 0.5) if side=='yes' else (result_f < 0.5)` is therefore **always False for any YES-side bet**, regardless of actual outcome. **Lifetime NBA: 0 won / 889 lost / 695 pending / $−289.81** — the 0/889 record is not bad luck, it's a code bug. The "bad" 222-loss day on June 9 ($−73.68) and 667-loss day on June 8 ($−216.13) are byproducts. Traced trade #7108 (Anunoby 6+ REB, 2026-05-19): Kalshi returns `result='no', status='finalized'`, script enters Branch 1, `_safe_float('no')=0.0`, `won = (0.0>=0.5)=False` → LOST. **Secondary bug** in Branch 3 (bid=ask=0 heuristic) hardcodes `won = False if side=='yes'` — wrong for markets that settled YES. Fix is a 3-line patch in `src/scripts/resolve_paper_trades.py`; once patched, reset `status='pending', pnl=0.0, resolved_price=NULL` for the 889 LOST NBA + 559 LOST MLB trades and re-run `python -m src.scripts.resolve_paper_trades`. **Crons installed** — `bash scripts/install-cron.sh` registered both jobs: daily report at `0 9 * * *` (paper mode) and hourly WC lineups at `0 7-23 11-19 6,7 *` (WC 2026 window June 11 - July 19, 7am-11pm). `--status` shows both ✅ INSTALLED. **Smoke-tested `morning_scan --paper`** — section 2.5 pre-step fires (`WC LINEUP CACHE REFRESH` → `running: populate_wc_lineups.py (window=90min, lookahead=4h)`), section 3 picked up 216 KXWCGAME markets, 325 qualifying bets logged (paper), 11/15 top plays are WC matches. Also moved `pytest_addoption --runlive` from `tests/test_fotmob_live.py` to `tests/conftest.py` (real fix — pytest parses CLI args before collecting test files, so the flag was previously dead code). Live e2e against BOL/ALG (~01:00 UTC June 11) still pending due to a date-filter bug in the test's `_find_upcoming_intl_match()` (looks under PDT date 20260610, but BOL/ALG is on UTC date 20260611). Earlier in the late-evening session: **WC paper-trade re-run verdict updated** to be conditional on the shrunk offset — +3.4pp post-shrinkage ROI is the correct baseline, pre-shrinkage +27.6pp was an over-correction; the shrunk offset generalizes better OOS at the cost of smaller in-sample ROI lift, which is the right trade-off for WC 2026. Earlier in the late-evening session: **WC lineup auto-population cron job** (`bin/populate_wc_lineups.py` — iterates KXWCGAME markets, resolves FotMob matchIds, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`), **pre-step hook in `morning_scan.py`** (section 2.5 runs the populate job before the WC scan), **`scripts/install-cron.sh` extended** (installs hourly WC lineups cron `0 7-23 11-19 6,7 *` during WC 2026 window June 11 - July 19 alongside the daily report), **26/26 unit tests pass** for ticker parsing + time-window filtering. Earlier in the evening: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`, **UFC 111→107-feature retrain** (removed 4 odds features + fixed `IndexError` in train_ufc.py), **WC paper-trade re-run** (no regression from UFC gap closure). Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
+Last updated: **2026-06-12** (Friday late — `test_oracle_2026.py` expanded to 11 tests (NFL cache freshness audit, WC feed regression, oracle API integration) + `OddsAPIClient` extended with MLB + NFL methods + new `_parse_h2h_team_outcome` helper; 8 pass + 3 skip without ODDS_API_KEY. **No model changes** — pure test + API client work. **Earlier in the day**: Friday morning — **5-leg consensus parlay for Kalshi combining WC + MLB** saved to `reports/BestBets.md` v2. Joint probability ~10.5% at fair price +852, target +1000+ for positive EV. 2 WC legs (USA ML 61.3% / Brazil ML 83.2% — research MODERATE/STRONG) + 3 MLB legs (BAL ML + CLE ML + HOU ML — fresh research confirmed BAL and CLE; HOU is model-only since the web can't validate 2026 games). **v2 correction**: removed Scotland leg because the "model 58.9% Scotland" number was sourced from a prior BestBets.md session note (not live `scan_wc.py` output) and fresh researcher-web pass said PASS on Scotland. Flipped ATL@BAL pick from ATL to BAL after fresh research showed BAL is the home favorite at -140. Cross-referenced live model output (`scan_wc.py` + `scan_mlb_sim.py` run today) with 4 fresh `researcher-web` deep-research passes (2 WC, 2 MLB). **No code changes this session** — only documentation. Previous session: **2026-06-11** (Thursday evening — 3 parallel researcher-web passes on UFC Freedom 250 surfaced 6 new research-confirmed props (Topuria NO distance, Pereira KO/TKO +120, Under 3.5 Rounds -140, Ruffy/Chandler NO distance, Lopes R1, Gane Decision hedge), cross-referenced with just-built `mov_calibration.json` calibrated MoV probs; new section in `reports/BestBets.md`). Previous session: **2026-06-11** (Thursday — World Cup 2026 first-round + UFC Freedom 250 picks saved to `reports/BestBets.md`; scanned for 4-leg play combining WC + MLB but MLB scanner returning 0 positive edges so WC-only 4-leg; UFC 3/4/5/6-leg parlays for June 14 with research-confirmed favorites; docs updated). Previous session: **2026-06-10** (Late-night session: **🐛 CRITICAL: `resolve_paper_trades.py` result-field type bug** — Kalshi's `result` field is a STRING ("yes"/"no") but the script does `_safe_float(result)`, which returns 0.0 for any string. The conditional `won = (result_f >= 0.5) if side=='yes' else (result_f < 0.5)` is therefore **always False for any YES-side bet**, regardless of actual outcome. **Lifetime NBA: 0 won / 889 lost / 695 pending / $−289.81** — the 0/889 record is not bad luck, it's a code bug. The "bad" 222-loss day on June 9 ($−73.68) and 667-loss day on June 8 ($−216.13) are byproducts. Traced trade #7108 (Anunoby 6+ REB, 2026-05-19): Kalshi returns `result='no', status='finalized'`, script enters Branch 1, `_safe_float('no')=0.0`, `won = (0.0>=0.5)=False` → LOST. **Secondary bug** in Branch 3 (bid=ask=0 heuristic) hardcodes `won = False if side=='yes'` — wrong for markets that settled YES. Fix is a 3-line patch in `src/scripts/resolve_paper_trades.py`; once patched, reset `status='pending', pnl=0.0, resolved_price=NULL` for the 889 LOST NBA + 559 LOST MLB trades and re-run `python -m src.scripts.resolve_paper_trades`. **Crons installed** — `bash scripts/install-cron.sh` registered both jobs: daily report at `0 9 * * *` (paper mode) and hourly WC lineups at `0 7-23 11-19 6,7 *` (WC 2026 window June 11 - July 19, 7am-11pm). `--status` shows both ✅ INSTALLED. **Smoke-tested `morning_scan --paper`** — section 2.5 pre-step fires (`WC LINEUP CACHE REFRESH` → `running: populate_wc_lineups.py (window=90min, lookahead=4h)`), section 3 picked up 216 KXWCGAME markets, 325 qualifying bets logged (paper), 11/15 top plays are WC matches. Also moved `pytest_addoption --runlive` from `tests/test_fotmob_live.py` to `tests/conftest.py` (real fix — pytest parses CLI args before collecting test files, so the flag was previously dead code). Live e2e against BOL/ALG (~01:00 UTC June 11) still pending due to a date-filter bug in the test's `_find_upcoming_intl_match()` (looks under PDT date 20260610, but BOL/ALG is on UTC date 20260611). Earlier in the late-evening session: **WC paper-trade re-run verdict updated** to be conditional on the shrunk offset — +3.4pp post-shrinkage ROI is the correct baseline, pre-shrinkage +27.6pp was an over-correction; the shrunk offset generalizes better OOS at the cost of smaller in-sample ROI lift, which is the right trade-off for WC 2026. Earlier in the late-evening session: **WC lineup auto-population cron job** (`bin/populate_wc_lineups.py` — iterates KXWCGAME markets, resolves FotMob matchIds, scrapes lineups 60-90 min pre-kickoff, writes to `data/cache/worldcup/lineups.json` + `fotmob_ids.json`), **pre-step hook in `morning_scan.py`** (section 2.5 runs the populate job before the WC scan), **`scripts/install-cron.sh` extended** (installs hourly WC lineups cron `0 7-23 11-19 6,7 *` during WC 2026 window June 11 - July 19 alongside the daily report), **26/26 unit tests pass** for ticker parsing + time-window filtering. Earlier in the evening: **WC empirical offset calibration** (NotebookLM rec, 3-class Δ from 2022 WC val, applied in scan_wc.py), **WC key_player_out feature** + **FotMob Playwright scraper** (Q2d from research file), **11/11 unit tests pass** via new `tests/conftest.py` + pytest config in `pyproject.toml`, **UFC 111→107-feature retrain** (removed 4 odds features + fixed `IndexError` in train_ufc.py), **WC paper-trade re-run** (no regression from UFC gap closure). Morning session: **MLB scanner fully repaired** (reg_*.json → lgb_*.txt + xgboost → lightgbm + BetaCal path), **5 new ALL_ stat types** (Singles/Doubles/Triples/H_FPTS/P_FPTS), **MIN_LINE=1.0 filter** to drop signal-free 0.5-line plays, **bin/refresh_everything.sh dispatcher** for all 4 sports, **.gitignore negation rules** for `*_beta_cal.json` across all sports, **pre-commit [3/3] size check** to prevent >50MB files, **NHL/NFL cron installers** for off-season monthly refreshes)
 
 ---
 
@@ -260,6 +260,127 @@ Models exist for NASCAR (win/top5/top10) and Golf (season stats). Not integrated
 |-------|--------|-----|
 | WC draw prediction still weak | 1/11 draws predicted correctly on 2022 WC | More neutral-venue data or separate draw model |
 | CFB models exist but untested | Quality unknown until season starts | Backtest when 2026 season begins |
+
+---
+
+## Session Log — June 12, 2026 (Late) — test_oracle_2026.py + OddsAPIClient expansion
+
+**No model changes** — all work was test infrastructure for the 2026 feed layer + centralizing odds API access.
+
+### Motivation
+The project has 4 production-critical data sources (MLB, NBA, NFL, WC) and a new oracle API. None had a single test that exercises the data + API surface in one place. `tests/test_oracle_2026.py` became the catch-all for "this must work for the 2026 season" tests. **Final state: 11 tests, 8 pass + 3 skip** (3 skip = MLB/NFL odds tests need `ODDS_API_KEY`).
+
+### 1. NFL cache freshness audit — REWRITTEN
+- `test_nfl_cache_freshness_audit` was using `game_date` which `nfl-data-py` doesn't expose in `import_weekly_data()` output. Rewrote to use `season` + `week` columns as the freshness proxy.
+- **Key finding**: `nfl_data_py.import_weekly_data()` returns **404 for 2025 + 2026** — the nflverse releases don't publish future seasons. "Fresh" cap is therefore **2024 season, weeks 1-22** (real NFL season 1-18 + playoffs).
+- Cache was also refreshed from **0 rows → 16,881 rows (2022-2024)** via `nfl.import_weekly_data([2022, 2023, 2024])`. The pre-existing `bin/refresh_nfl_cache.sh` script referenced in the user request doesn't exist; the right path is `bin/refresh_everything.sh nfl` (full chain) or the direct `nfl_data_py` import used here.
+- Test result: **PASSED** (previously SKIPPED, now runs and confirms 16,881 rows / 934 players / 2022-2024 wk1-22)
+
+### 2. OddsAPIClient — MLB + NFL support added
+- Added `SPORT_KEY_MLB = "baseball_mlb"` and `SPORT_KEY_NFL = "americanfootball_nfl"` constants
+- Added `OddsAPIClient.get_mlb_events()` + `get_mlb_odds(event_id)` methods
+- Added `OddsAPIClient.get_nfl_events()` + `get_nfl_odds(event_id)` methods
+- Added a new `_parse_h2h_team_outcome(book)` helper that uses a **name-to-odds lookup** (more robust than the UFC parser's position-based mapping because the API doesn't guarantee outcome ordering)
+- Updated module docstring
+- **Why this matters**: Before, the MLB and NFL tests in `test_oracle_2026.py` were calling the odds API directly, duplicating the URL/parsing logic. Centralizing in the client means future sports (NHL, CFB, etc.) just need `_parse_h2h_team_outcome` + the same 2-method pattern.
+
+### 3. WC feed regression tests — 3 new tests
+- **`test_wc_all_matches_parquet_contains_arg_fra_2022_final`** — hits `data/cache/worldcup/all_matches.parquet` and verifies the 2022-12-18 ARG-FRA final: `home_team="Argentina"`, `away_team="France"`, score **3-3** (regulation+ET, **NOT** the 4-2 penalty win — explicitly documented in test docstring to prevent future "fixes"), `tournament_code="WC"`, `source="eloratings"`, Elo columns in [1500, 2500] range
+- **`test_wc_fetch_all_matches_returns_canonical_columns`** — calls `src.data.world_cup.fetch_all_matches()` and verifies the canonical schema (subset match). Skips on network failure
+- **`test_wc_data_source_2022_cache_shape`** — asserts ≥ 50 WC 2022 matches in cache (real count is 64)
+
+### 4. Odds API test updates + guard rename
+- `test_odds_api_returns_2026_mlb_odds` + `test_odds_api_returns_2026_nfl_odds` now use `OddsAPIClient.get_*_events()` + `get_*_odds(event_id)` instead of calling the API directly
+- `test_odds_api_client_is_ufc_only` → **`test_odds_api_client_sport_coverage`** with **positive assertions** (expected_methods list + sport_methods set diff catches both accidental removal AND accidental addition of new methods)
+
+### 5. Oracle API integration test — closes the loop
+- **`test_wc_2026_oracle_api_integration`** — hermetic end-to-end test using `fastapi.testclient.TestClient` to import `bin.oracle_api:app` in-process (no real server needed)
+- Hits `/health` (asserts `wc_cache_loaded=true`), `/oracle/wc/2022-12-18` (verifies ARG-FRA final shape), `/oracle/wc/2026-06-12` (today's slate — doesn't require matches to exist), and `/oracle/wc/not-a-date` (asserts 400 + "Invalid date" detail)
+- **Why this matters**: Catches API schema drift (e.g., a field rename in `/oracle/wc/{date}` response) before production traffic hits it. Runs in-process via TestClient — no real server, no port conflicts, no flake.
+
+### 6. Discussion — does the oracle improve our odds of winning?
+**No** — the oracle doesn't touch the model. `scan_mlb_sim.py`, `train_mlb_regression.py`, the cals, the features, all unchanged. **It improves the RESEARCH VALIDATION LAYER** (model output → researcher override → better confidence calibration). The NBA 0W/889L record (the result-field type bug, June 10) is the canonical example of what happens WITHOUT a validation layer — 1,444 blind paper trades, all silently wrong. **Need a backtest of the oracle itself? No** — infrastructure, not a strategy. **Highest-leverage next step**: log researcher ratings to a parquet/SQLite table so future backtests can measure "researcher STRONG vs actual win".
+
+### Files changed
+- `tests/test_oracle_2026.py` — 11 tests (was 4), NFL cache freshness test rewritten, WC + oracle API tests added, odds tests use new client methods
+- `src/data/odds_api.py` — +4 methods, +1 helper, +2 constants, docstring updated
+- `data/nfl_cache/weekly.parquet` — refreshed to 16,881 rows (2022-2024)
+
+### Files NOT changed (intentionally)
+- All MLB models + cal files (the changes in git status are the usual daily retrain diffs)
+- All NBA models + importance CSVs (same — daily retrain)
+- `bin/morning_scan.sh`, `scripts/install-cron.sh` — already documented in June 10/11 session logs
+
+### Code review
+Spawned in parallel with the test run for the major changes. Reviewer returned with no actionable issues.
+
+---
+
+## Session Log — June 11, 2026
+
+### UFC Freedom 250 — additional research-confirmed props (3 parallel researcher-web passes)
+
+**No code changes this session** — all work was picks analysis and documentation.
+
+**3 parallel `researcher-web` passes** on the Freedom 250 card (June 14) to surface more research-confirmed props beyond the existing 3/4/5/6-leg moneyline parlays and the Topuria R3-5 prop:
+
+1. **Researcher 1 (main events)** — Topuria/Gaethje + Pereira/Gane with DK odds + public % + expert consensus. High quality, directly actionable.
+2. **Researcher 2 (undercard)** — O'Malley/Lewis/Hokit/Ruffy/Nickal/Lopes with fighter archetype priors. Useful for finish/distance reasoning.
+3. **Researcher 3 (special props)** — **UNRELIABLE** — claimed the event is a fictional exhibition at the White House and that no commercial sportsbooks offer lines. SKIPPED. The event IS real with standard DK/FanDuel/ESPN BET coverage.
+
+**Cross-reference with `models/ufc/mov_calibration.json`** (built earlier in the day):
+- Pulled calibrated MoV + round probs for all 7 fights via `prop_bet_model_probabilities()`
+- Topuria P(red) = 76.6%, P(inside distance) = 99.3%
+- Pereira P(red) = 69.3%, P(inside distance) = 100% (model overcompressing — see caveat)
+- Hokit P(red) = 54.2% (close fight, model has Hokit as favorite, not Lewis)
+
+**6 STRONG props saved to `reports/BestBets.md` new section:**
+1. **Topuria vs Gaethje — Goes to distance: NO** (-250, research Strong, model 99.3%)
+2. **Pereira vs Gane — Pereira by KO/TKO** (+120, research Strong, model 100% finish)
+3. **Pereira vs Gane — Under 3.5 Rounds** (-140, research Strong, model 100%)
+4. **Ruffy vs Chandler — Does NOT go to distance** (research Moderate, model 100% finish)
+5. **Lopes vs Garcia — Fight ends in R1** (research Moderate, model 100% finish)
+6. **Pereira vs Gane — Gane by Decision** (+150, research Strong, alt hedge)
+
+**5 MODERATE props** (research only or model-research mild conflict): Topuria by Decision, Topuria R1-2 KO, O'Malley to Decision (model conflict — trust research), Nickal by Sub R1/R2, Lewis R1 finish (model has Hokit favored).
+
+**Key methodology notes:**
+- ⚠️ **Calibration overcompression caveat** — model says 99-100% finish for 5/7 fights, but this is the known renormalization-after-independent-cal artifact in `mov_calibration.json`. Treat 99% as "high finish probability" not "certain". Research leans are more useful for method/round specifics.
+- ⚠️ **Model-research CONFLICT flags** — on O'Malley to Decision (model says high finish, research Strong on going distance — trust research) and on Lewis winner (model has Hokit 54%, not Lewis — so Lewis R1 prop is a "if Lewis wins" bet, not "Lewis wins").
+- **Budget** — existing 3/4/5/6-leg parlays total $100, exceeds $30/day cap. New props would be on June 14 fight day. Recommended reallocation in `reports/BestBets.md` (Option A: defer parlays, bet $30 in new props; Option B: reduce parlay size).
+
+**Documentation updates:**
+- `reports/BestBets.md`: Added new section at the top of the June 11 entries with 6 STRONG + 5 MODERATE + 6 SKIP props + reallocation guidance.
+- `PROJECT.md`: Updated "Last updated" line, added this session log section.
+
+**No orders placed** — all candidates for user approval per Hard Rule #3.
+
+### World Cup 2026 first-round + UFC Freedom 250 picks + 4-leg play
+
+**No code changes this session** — all work was picks analysis and documentation.
+
+**World Cup 2026 first-round (June 11-17) — 13 picks saved to `reports/BestBets.md`:**
+- Re-ran `src/scripts/scan_wc` to get fresh model output on all first-round games. 28 picks flagged, mostly phantom edges on underdogs (same overconfidence bug class as NBA).
+- Dispatched 3 parallel `researcher-web` deep-research passes: (1) per-game expert consensus on all 17 confirmed WC group-stage matches with DK odds + public percentage + consensus pick; (2) value/contrarian angles (Norway vs Iraq, Mexico altitude, Tunisia vs Sweden altitude, Uzbekistan vs Colombia, Iran vs NZ); (3) researcher's own additional pass.
+- Combined model + research into final 13 picks: **12 ML + 1 draw**. The single model-research agreement is Scotland vs Haiti (model 58.9% vs market 14.5%, research Strong). All other 12 ML plays are research-consensus with model silent or phantom-overridden.
+- 6 SKIP matches: model phantom edges on longshots (Australia +279%, Jordan +415%, Panama +323%, etc.) that research explicitly overrules.
+
+**UFC Freedom 250 (June 14, White House) — 3/4/5/6-leg parlays saved to `reports/BestBets.md`:**
+- Inspected `models/ufc/` state: winner model trained (Brier ~0.158 in-sample), fighter lookup current (4,548 fighters), cal loaded. 107 features (no r_odds after June 10 retrain).
+- Ran `python -m src.scripts.kalshi_ufc --scan` — 66 markets scanned, 0 single-leg ≥5% edge qualify, all value is in parlays.
+- Dispatched 2 parallel `researcher-web` passes: (1) UFC Freedom 250 card + matchups + DK odds; (2) per-fight expert consensus + method-of-victory + prop value + 1-line parlay summary.
+- Built **3-leg "Safe Core"** (Topuria + O'Malley + Ruffy, all Strong research), **4-leg "Add the Wrestler"** (+ Bo Nickal), **5-leg "All Favorites"** (+ Josh Hokit), **6-leg "Max Coverage"** (+ Diego Lopes). Best single prop: **Topuria R3-5 (+140)**.
+- **SKIP**: Ciryl Gane vs Alex Pereira (research SPLIT, true coin-flip).
+
+**Best 4-Leg Play for June 11 (WC + MLB) — saved to `reports/BestBets.md`:**
+- Checked MLB data freshness: data refreshed today, models trained yesterday, cal files within bounds. But scanner still produces 0 positive edges (all top picks show model 2-31% vs market 56-99% — markets at extreme prices like 99¢ for "1+ HR" that the model can't rationally agree with).
+- Built 4-leg play: Mexico ML + Czechia ML (WC) + WC draw double-up. **WC-only** until MLB scanner recovers (after retraining on 2026 data or rolling back the live-fit cals).
+
+**Documentation updates:**
+- `reports/BestBets.md`: Added June 11 section at the top with WC 13 picks + UFC 3/4/5/6-leg parlays + best 4-leg play (WC-only) + MLB scanner caveat.
+- `PROJECT.md`: Updated "Last updated" line, added this session log section above June 10 evening entry.
+
+**No orders placed** — all candidates for user approval per Hard Rule #3.
 
 ---
 

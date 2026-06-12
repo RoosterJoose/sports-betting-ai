@@ -201,6 +201,36 @@ def fit_beta_cal_for_stat(featured, stat_name, raw_col, pos_filter, compute_fn=N
 
     # Save
     save_path = CALIB_DIR / f"{stat_name.lower()}_beta_cal.json"
+    # Per-decile guard: bin (P_raw, outcome) into 10 deciles, reject if any
+    # bin's mean |residual| > 10%. Mirrors refit_mlb_beta_cal_live.py's
+    # magnitude guard but for the fit-time check, not the live refit.
+    raw_for_decile = raw_arr[valid]
+    out_for_decile = out_arr[valid]
+    try:
+        import pandas as _pd
+        _decile_df = _pd.DataFrame({"p_raw": raw_for_decile, "outcome": out_for_decile})
+        _decile_df["bin"] = _pd.qcut(_decile_df["p_raw"], q=10, duplicates="drop")
+        _decile_stats = _decile_df.groupby("bin", observed=True).agg(
+            p_raw_mean=("p_raw", "mean"),
+            outcome_mean=("outcome", "mean"),
+            n=("outcome", "count"),
+        )
+        _decile_stats["abs_bias"] = (_decile_stats["p_raw_mean"] - _decile_stats["outcome_mean"]).abs()
+        _worst = float(_decile_stats["abs_bias"].max()) if not _decile_stats.empty else 0.0
+        print(f"    Per-decile calibration (n={len(raw_for_decile)}):")
+        for _idx, _row in _decile_stats.iterrows():
+            print(f"      bin {_idx!s:25s}  P_raw={_row['p_raw_mean']:.3f}  "
+                  f"P_act={_row['outcome_mean']:.3f}  |bias|={_row['abs_bias']:.3f}  n={int(_row['n'])}")
+        if _worst > 0.10:
+            print(f"    REJECTED: worst decile bias {_worst:.1%} > 10% — NOT saving")
+            print(f"    (Per-decile guard prevents overfit cals from being written)")
+            return
+    except Exception as _e:
+        # If decile check fails (e.g., not enough unique values), skip the
+        # guard but still save. The magnitude guard in
+        # refit_mlb_beta_cal_live.py will catch live-refit overfits.
+        print(f"    Per-decile guard skipped: {_e}")
+
     beta_cal.save(save_path)
     print(f"    Saved to {save_path}")
 
